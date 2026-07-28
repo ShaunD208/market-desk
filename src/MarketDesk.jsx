@@ -739,7 +739,10 @@ export default function MarketDesk() {
                   {gainers.map((r) => (
                     <div key={r.symbol} className="flex items-center justify-between text-sm">
                       <span className="font-mono" style={{ color: "#F1EEFB" }}>{r.symbol}</span>
-                      <ChangeTag pct={r.pct} />
+                      <span className="flex items-center gap-3">
+                        <span className="font-mono text-xs" style={{ color: "#9C97C4" }}>{r.price !== null ? fmt(r.price) : "—"}</span>
+                        <ChangeTag pct={r.pct} />
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -754,7 +757,10 @@ export default function MarketDesk() {
                   {losers.map((r) => (
                     <div key={r.symbol} className="flex items-center justify-between text-sm">
                       <span className="font-mono" style={{ color: "#F1EEFB" }}>{r.symbol}</span>
-                      <ChangeTag pct={r.pct} />
+                      <span className="flex items-center gap-3">
+                        <span className="font-mono text-xs" style={{ color: "#9C97C4" }}>{r.price !== null ? fmt(r.price) : "—"}</span>
+                        <ChangeTag pct={r.pct} />
+                      </span>
                     </div>
                   ))}
                 </div>
