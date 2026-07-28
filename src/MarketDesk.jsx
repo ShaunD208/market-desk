@@ -169,10 +169,17 @@ function buildMockSeries(symbol, pc, c, points = 40) {
   return arr;
 }
 
-// Standard browser localStorage — works on any real website (unlike the
-// artifact-only window.storage API used inside claude.ai).
+// Detects whether this is running inside a Claude artifact (which has the
+// special window.storage API) or as a real deployed website (which doesn't,
+// but has normal localStorage instead). One file now works in both places.
+const IN_ARTIFACT_SANDBOX = typeof window !== "undefined" && !!window.storage;
+
 async function safeStorageGet(key) {
   try {
+    if (IN_ARTIFACT_SANDBOX) {
+      const res = await window.storage.get(key, false);
+      return res ? JSON.parse(res.value) : null;
+    }
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : null;
   } catch (e) {
@@ -181,6 +188,10 @@ async function safeStorageGet(key) {
 }
 async function safeStorageSet(key, value) {
   try {
+    if (IN_ARTIFACT_SANDBOX) {
+      await window.storage.set(key, JSON.stringify(value), false);
+      return;
+    }
     localStorage.setItem(key, JSON.stringify(value));
   } catch (e) {
     console.error("storage set failed", e);
@@ -505,19 +516,49 @@ export default function MarketDesk() {
             <span className="uppercase tracking-widest text-xs" style={{ color: "#8B87A8", fontFamily: "JetBrains Mono, monospace" }}>Market Desk</span>
           </div>
           <h1 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-2xl font-semibold mb-2">Connect a data feed</h1>
-          <p className="text-sm mb-3" style={{ color: "#9C97C4" }}>
-            This dashboard is built to pull live quotes from Finnhub's free API. Heads up: this artifact's sandbox blocks outgoing requests to external sites, so live data won't load here no matter what key you use — that's a platform restriction, not a problem with your account.
-          </p>
-          <button
-            onClick={enterSimulatedMode}
-            className="w-full py-2.5 rounded-md text-sm font-semibold mb-4"
-            style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontFamily: "Space Grotesk, sans-serif", boxShadow: "0 8px 24px -6px rgba(214,95,224,0.5)" }}
-          >
-            Use simulated data now
-          </button>
-          <details className="text-sm" style={{ color: "#9C97C4" }}>
-            <summary className="cursor-pointer select-none" style={{ color: "#8B87A8" }}>Have a Finnhub key anyway? (won't fetch live here, but saved for later)</summary>
-            <div className="mt-3">
+          {IN_ARTIFACT_SANDBOX ? (
+            <>
+              <p className="text-sm mb-3" style={{ color: "#9C97C4" }}>
+                This dashboard is built to pull live quotes from Finnhub's free API. Heads up: this artifact's sandbox blocks outgoing requests to external sites, so live data won't load here no matter what key you use — that's a platform restriction, not a problem with your account.
+              </p>
+              <button
+                onClick={enterSimulatedMode}
+                className="w-full py-2.5 rounded-md text-sm font-semibold mb-4"
+                style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontFamily: "Space Grotesk, sans-serif", boxShadow: "0 8px 24px -6px rgba(214,95,224,0.5)" }}
+              >
+                Use simulated data now
+              </button>
+              <details className="text-sm" style={{ color: "#9C97C4" }}>
+                <summary className="cursor-pointer select-none" style={{ color: "#8B87A8" }}>Have a Finnhub key anyway? (won't fetch live here, but saved for later)</summary>
+                <div className="mt-3">
+                  <input
+                    value={keyDraft}
+                    onChange={(e) => setKeyDraft(e.target.value)}
+                    placeholder="Paste your Finnhub API key"
+                    className="w-full px-3 py-2.5 rounded-md mb-3 text-sm font-mono outline-none"
+                    style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
+                  />
+                  <button
+                    onClick={saveApiKey}
+                    disabled={!keyDraft.trim()}
+                    className="w-full py-2 rounded-md text-sm font-medium disabled:opacity-40"
+                    style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#F1EEFB" }}
+                  >
+                    Save key
+                  </button>
+                </div>
+              </details>
+            </>
+          ) : (
+            <>
+              <p className="text-sm mb-4" style={{ color: "#9C97C4" }}>
+                This dashboard pulls live quotes from Finnhub's free API — real-time US stock data, 60 requests/minute, no credit card required.
+              </p>
+              <ol className="text-sm mb-5 space-y-1.5 list-decimal list-inside" style={{ color: "#9C97C4" }}>
+                <li>Go to <span style={{ color: "#A78BFA" }}>finnhub.io/register</span> and create a free account</li>
+                <li>Copy the API key from your dashboard</li>
+                <li>Paste it below</li>
+              </ol>
               <input
                 value={keyDraft}
                 onChange={(e) => setKeyDraft(e.target.value)}
@@ -528,13 +569,21 @@ export default function MarketDesk() {
               <button
                 onClick={saveApiKey}
                 disabled={!keyDraft.trim()}
-                className="w-full py-2 rounded-md text-sm font-medium disabled:opacity-40"
-                style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#F1EEFB" }}
+                className="w-full py-2.5 rounded-md text-sm font-semibold disabled:opacity-40 mb-3"
+                style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontFamily: "Space Grotesk, sans-serif", boxShadow: "0 8px 24px -6px rgba(214,95,224,0.5)" }}
               >
-                Save key
+                Connect
               </button>
-            </div>
-          </details>
+              <button
+                onClick={enterSimulatedMode}
+                className="w-full py-2 rounded-md text-sm font-medium"
+                style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
+              >
+                Or use simulated data instead
+              </button>
+              <p className="text-xs mt-3" style={{ color: "#655F8C" }}>Your key is stored only in this browser's local storage. It's never sent anywhere but Finnhub.</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -868,15 +917,29 @@ export default function MarketDesk() {
               <button onClick={() => setShowSettings(false)}><X size={16} color="#9C97C4" /></button>
             </div>
             <label className="text-xs uppercase tracking-wider" style={{ color: "#8B87A8" }}>Finnhub API key</label>
-            <p className="text-xs mt-1 mb-2" style={{ color: "#655F8C" }}>
-              Note: this sandbox blocks external requests, so a live key won't actually fetch data here.
-            </p>
-            <input
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              className="w-full px-3 py-2 rounded-md mt-1.5 mb-4 text-sm font-mono outline-none"
-              style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
-            />
+            {IN_ARTIFACT_SANDBOX && (
+              <p className="text-xs mt-1 mb-2" style={{ color: "#655F8C" }}>
+                Note: this sandbox blocks external requests, so a live key won't actually fetch data here.
+              </p>
+            )}
+            <div className="flex gap-2 mt-1.5 mb-1">
+              <input
+                value={keyDraft}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-md text-sm font-mono outline-none"
+                style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
+              />
+              <button
+                type="button"
+                onClick={() => setKeyDraft("")}
+                title="Clear"
+                className="px-2.5 rounded-md text-xs"
+                style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
+              >
+                Clear
+              </button>
+            </div>
+            <p className="text-[11px] mb-3" style={{ color: "#655F8C" }}>{keyDraft.length} characters — if this looks longer than your actual key, hit Clear and paste it fresh.</p>
             <button onClick={saveApiKey} className="w-full py-2 rounded-md text-sm font-semibold mb-2" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
               Save
             </button>
