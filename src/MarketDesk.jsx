@@ -169,28 +169,6 @@ function buildMockSeries(symbol, pc, c, points = 40) {
   return arr;
 }
 
-// Real intraday candles for the index cards (used once this runs outside the
-// artifact sandbox, where Finnhub calls actually succeed). Falls back silently.
-async function fetchCandles(symbol, apiKey) {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 6.5 * 3600;
-  const target = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=15&from=${from}&to=${to}&token=${apiKey}`;
-  const attempts = [
-    () => fetch(target),
-    () => fetch(`https://corsproxy.io/?url=${encodeURIComponent(target)}`),
-    () => fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`),
-  ];
-  for (const attempt of attempts) {
-    try {
-      const res = await attempt();
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.s === "ok" && Array.isArray(data.c) && data.c.length > 1) return data.c;
-    } catch (e) { /* try next */ }
-  }
-  return null;
-}
-
 // Standard browser localStorage — works on any real website (unlike the
 // artifact-only window.storage API used inside claude.ai).
 async function safeStorageGet(key) {
@@ -347,22 +325,22 @@ export default function MarketDesk() {
       });
       setLastUpdated(new Date());
 
-      // Try real intraday candles for the 4 index cards; fall back to a
-      // quote-anchored mock shape if candles aren't available.
-      const candleResults = await Promise.all(
-        INDEX_PROXIES.map(async ({ symbol }) => {
-          const candles = await fetchCandles(symbol, apiKey);
-          return [symbol, candles];
-        })
-      );
+      // Finnhub's free tier blocks the historical-candle endpoint (premium-only,
+      // returns 403), so instead of faking a shape we build the index charts from
+      // real prices as they come in — each refresh appends the actual observed
+      // price, so the chart is a genuine (if gradually-built) live price trail.
       setIndexSeries((prev) => {
         const nextSeries = { ...prev };
-        for (const [symbol, candles] of candleResults) {
-          if (candles) {
-            nextSeries[symbol] = candles;
+        for (const { symbol } of INDEX_PROXIES) {
+          const q = computedQuotes[symbol];
+          if (!q) continue;
+          const existing = prev[symbol];
+          if (!existing || existing.length < 2) {
+            // First time we see this symbol: seed a short lead-in so the chart
+            // isn't a single dot, then the real trail builds from here on.
+            nextSeries[symbol] = [...buildMockSeries(symbol, q.pc, q.c, 8), q.c];
           } else {
-            const q = computedQuotes[symbol];
-            if (q) nextSeries[symbol] = buildMockSeries(symbol, q.pc, q.c);
+            nextSeries[symbol] = [...existing, q.c].slice(-80);
           }
         }
         return nextSeries;
