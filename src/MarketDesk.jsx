@@ -155,6 +155,106 @@ async function fetchQuotesBatched(symbols, apiKey, batchSize = 6, pauseMs = 250)
   return out;
 }
 
+// Free public finance RSS feeds — no API key, no cost. Used to give the AI
+// briefing real headlines to reason about instead of paid search grounding.
+const NEWS_FEEDS = [
+  "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+  "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+];
+
+async function fetchViaProxyChain(target) {
+  const attempts = [
+    () => fetch(target),
+    () => fetch(`https://corsproxy.io/?url=${encodeURIComponent(target)}`),
+    () => fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`),
+  ];
+  for (const attempt of attempts) {
+    try {
+      const res = await attempt();
+      if (!res.ok) continue;
+      return await res.text();
+    } catch (e) { /* try next */ }
+  }
+  return null;
+}
+
+function extractHeadlines(xmlText, limit = 6) {
+  if (!xmlText) return [];
+  const matches = [...xmlText.matchAll(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/gs)];
+  return matches
+    .slice(1) // first <title> is usually the feed's own title, not a story
+    .map((m) => m[1].trim())
+    .filter((t) => t && !/^\s*$/.test(t))
+    .slice(0, limit);
+}
+
+async function fetchMarketHeadlines() {
+  const results = await Promise.all(NEWS_FEEDS.map((url) => fetchViaProxyChain(url)));
+  const headlines = results.flatMap((xml) => extractHeadlines(xml, 6));
+  return headlines.slice(0, 10);
+}
+
+// Calls Google's free-tier Gemini API directly from the browser (no backend
+// needed — confirmed CORS-friendly on the standard generateContent endpoint).
+async function callGemini(apiKeyG, prompt) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${encodeURIComponent(apiKeyG)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.4 },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Gemini ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+  if (!text) throw new Error("Empty response from Gemini");
+  return text;
+}
+
+function buildBriefingPrompt({ dateStr, indexLines, moverLines, headlines }) {
+  return `You are a calm, precise market-briefing assistant writing a short daily note for a retail investor reviewing their own personal watchlist. Today is ${dateStr}.
+
+INDEX SNAPSHOT:
+${indexLines}
+
+NOTABLE WATCHLIST MOVERS:
+${moverLines || "(no data yet)"}
+
+RECENT FINANCIAL HEADLINES:
+${headlines.length ? headlines.map((h) => `- ${h}`).join("\n") : "(no headlines available right now — base your read on price action alone)"}
+
+Write a briefing using ONLY the information above. Do not invent facts, numbers, or events not implied by this data. Do not give buy/sell/hold recommendations or tell the reader what to do with their money — describe what's happening and why it might matter, and let them draw their own conclusions. Keep it grounded and specific, not generic.
+
+Respond with ONLY raw JSON (no markdown fences, no commentary) matching exactly this shape:
+{
+  "summary": "2-4 sentences on what's driving markets today, in plain language",
+  "riskLabel": "Risk-On" | "Risk-Off" | "Mixed / Neutral",
+  "riskReason": "one short sentence justifying the label",
+  "callouts": [
+    { "symbol": "TICKER", "note": "one short, specific sentence of context — not advice" }
+  ]
+}
+Include at most 5 callouts, only for names with something genuinely notable to say. If nothing stands out, return an empty callouts array.`;
+}
+
+function parseBriefingResponse(text) {
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```\s*$/, "");
+  const parsed = JSON.parse(cleaned);
+  if (!parsed || typeof parsed.summary !== "string") throw new Error("Unexpected shape");
+  return {
+    summary: parsed.summary,
+    riskLabel: parsed.riskLabel || "Mixed / Neutral",
+    riskReason: parsed.riskReason || "",
+    callouts: Array.isArray(parsed.callouts) ? parsed.callouts.slice(0, 5) : [],
+  };
+}
+
 function buildMockSeries(symbol, pc, c, points = 40) {
   const rand = seededRandom(symbol + "-series-" + Date.now());
   const arr = [];
@@ -264,7 +364,14 @@ export default function MarketDesk() {
   const [importMsg, setImportMsg] = useState("");
   const [includeKeyInBackup, setIncludeKeyInBackup] = useState(true);
 
+  const [geminiKey, setGeminiKey] = useState("");
+  const [geminiKeyDraft, setGeminiKeyDraft] = useState("");
+  const [briefing, setBriefing] = useState(null); // { date, summary, riskLabel, riskReason, callouts, generatedAt }
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [briefingError, setBriefingError] = useState("");
+
   const intervalRef = useRef(null);
+  const autoBriefingRef = useRef(null);
 
   // ---- Load persisted state ----
   useEffect(() => {
@@ -272,20 +379,26 @@ export default function MarketDesk() {
       const settings = await safeStorageGet("md-settings");
       const wl = await safeStorageGet("md-watchlist");
       const pf = await safeStorageGet("md-portfolio");
+      const br = await safeStorageGet("md-briefing");
       if (settings?.apiKey) {
         setApiKey(settings.apiKey);
         setKeyDraft(settings.apiKey);
+      }
+      if (settings?.geminiKey) {
+        setGeminiKey(settings.geminiKey);
+        setGeminiKeyDraft(settings.geminiKey);
       }
       if (settings?.autoRefresh) setAutoRefresh(true);
       if (settings?.simulated) setSimulated(true);
       if (Array.isArray(wl) && wl.length) setWatchlist(wl);
       if (Array.isArray(pf)) setPortfolio(pf);
+      if (br && br.date) setBriefing(br);
       setReady(true);
     })();
   }, []);
 
-  const persistSettings = useCallback((key, auto, sim) => {
-    safeStorageSet("md-settings", { apiKey: key, autoRefresh: auto, simulated: sim });
+  const persistSettings = useCallback((key, auto, sim, gKey) => {
+    safeStorageSet("md-settings", { apiKey: key, autoRefresh: auto, simulated: sim, geminiKey: gKey });
   }, []);
 
   // ---- Fetching ----
@@ -392,23 +505,77 @@ export default function MarketDesk() {
     return () => intervalRef.current && clearInterval(intervalRef.current);
   }, [autoRefresh, apiKey, simulated, fetchAll]);
 
+  useEffect(() => {
+    if (!ready || !geminiKey) return;
+    const todayStr = new Date().toDateString();
+    if (briefing && briefing.date === todayStr) return;
+    if (Object.keys(quotes).length === 0) return;
+    if (autoBriefingRef.current === todayStr) return;
+    autoBriefingRef.current = todayStr;
+    generateBriefing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, geminiKey, quotes, briefing]);
+
   // ---- Handlers ----
   function saveApiKey() {
     const key = keyDraft.trim();
     setApiKey(key);
     setSimulated(false);
-    persistSettings(key, autoRefresh, false);
+    persistSettings(key, autoRefresh, false, geminiKey);
     setShowSettings(false);
   }
   function enterSimulatedMode() {
     setSimulated(true);
-    persistSettings(apiKey, autoRefresh, true);
+    persistSettings(apiKey, autoRefresh, true, geminiKey);
   }
   function exitSimulatedMode() {
     setSimulated(false);
     setQuotes({});
-    persistSettings(apiKey, autoRefresh, false);
+    persistSettings(apiKey, autoRefresh, false, geminiKey);
     setShowSettings(true);
+  }
+  function saveGeminiKey() {
+    const key = geminiKeyDraft.trim();
+    setGeminiKey(key);
+    persistSettings(apiKey, autoRefresh, simulated, key);
+  }
+
+  async function generateBriefing(force) {
+    if (!geminiKey) {
+      setBriefingError("Add a free Gemini API key in Settings to enable the AI briefing.");
+      return;
+    }
+    const todayStr = new Date().toDateString();
+    if (!force && briefing && briefing.date === todayStr) return;
+    setBriefingLoading(true);
+    setBriefingError("");
+    try {
+      const headlines = simulated ? [] : await fetchMarketHeadlines();
+      const indexLines = INDEX_PROXIES.map(({ symbol, label }) => {
+        const q = quotes[symbol];
+        return q ? `${label} (${symbol}): ${fmt(q.c)}, ${fmtPct(q.dp)}` : `${label} (${symbol}): no data yet`;
+      }).join("\n");
+      const moversForPrompt = watchlist
+        .map((sym) => {
+          const q = quotes[sym];
+          return q ? { symbol: sym, pct: q.dp, price: q.c } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))
+        .slice(0, 12);
+      const moverLines = moversForPrompt.map((m) => `${m.symbol}: ${fmt(m.price)} (${fmtPct(m.pct)})`).join("\n");
+      const dateStr = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+      const prompt = buildBriefingPrompt({ dateStr, indexLines, moverLines, headlines });
+      const raw = await callGemini(geminiKey, prompt);
+      const parsed = parseBriefingResponse(raw);
+      const next = { ...parsed, date: todayStr, generatedAt: new Date().toISOString(), simulatedNote: simulated };
+      setBriefing(next);
+      safeStorageSet("md-briefing", next);
+    } catch (e) {
+      setBriefingError("Couldn't generate the briefing — " + (e.message || "unknown error") + ". Double-check your Gemini key in Settings.");
+    } finally {
+      setBriefingLoading(false);
+    }
   }
 
   function generateBackupCode() {
@@ -419,6 +586,7 @@ export default function MarketDesk() {
       autoRefresh,
       simulated,
       apiKey: includeKeyInBackup ? apiKey : "",
+      geminiKey: includeKeyInBackup ? geminiKey : "",
     };
     try {
       const code = btoa(encodeURIComponent(JSON.stringify(payload)));
@@ -452,13 +620,16 @@ export default function MarketDesk() {
         safeStorageSet("md-portfolio", decoded.portfolio);
       }
       const nextKey = decoded.apiKey || apiKey;
+      const nextGeminiKey = decoded.geminiKey || geminiKey;
       const nextAuto = !!decoded.autoRefresh;
       const nextSim = decoded.apiKey ? false : simulated;
       setApiKey(nextKey);
       setKeyDraft(nextKey);
+      setGeminiKey(nextGeminiKey);
+      setGeminiKeyDraft(nextGeminiKey);
       setAutoRefresh(nextAuto);
       if (decoded.apiKey) setSimulated(false);
-      persistSettings(nextKey, nextAuto, nextSim);
+      persistSettings(nextKey, nextAuto, nextSim, nextGeminiKey);
       setQuotes({});
       setImportText("");
       setImportMsg("Imported! Your watchlist and portfolio are restored.");
@@ -470,7 +641,7 @@ export default function MarketDesk() {
   function toggleAutoRefresh() {
     const next = !autoRefresh;
     setAutoRefresh(next);
-    persistSettings(apiKey, next, simulated);
+    persistSettings(apiKey, next, simulated, geminiKey);
   }
   function addWatchSymbol(e) {
     e.preventDefault();
@@ -773,6 +944,95 @@ export default function MarketDesk() {
       <div className="p-5">
         {tab === "overview" && (
           <div className="space-y-6">
+            {/* AI Briefing */}
+            <div className="rounded-lg p-5" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <div style={{ width: 6, height: 6, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 8px 1px rgba(214,95,224,0.5)" }} className="rounded-full" />
+                  <span className="text-sm uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Today's briefing</span>
+                  {briefing && briefing.riskLabel && (
+                    <span
+                      className="text-xs font-semibold px-2 py-0.5 rounded-full ml-1"
+                      style={{
+                        background: briefing.riskLabel === "Risk-On" ? "rgba(52,231,166,0.15)" : briefing.riskLabel === "Risk-Off" ? "rgba(255,92,130,0.15)" : "rgba(148,130,255,0.15)",
+                        color: briefing.riskLabel === "Risk-On" ? "#34E7A6" : briefing.riskLabel === "Risk-Off" ? "#FF5C82" : "#A78BFA",
+                        border: `1px solid ${briefing.riskLabel === "Risk-On" ? "rgba(52,231,166,0.35)" : briefing.riskLabel === "Risk-Off" ? "rgba(255,92,130,0.35)" : "rgba(148,130,255,0.35)"}`,
+                      }}
+                    >
+                      {briefing.riskLabel}
+                    </span>
+                  )}
+                </div>
+                {geminiKey && (
+                  <button
+                    onClick={() => generateBriefing(true)}
+                    disabled={briefingLoading}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium"
+                    style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
+                  >
+                    <RefreshCw size={12} className={briefingLoading ? "animate-spin" : ""} />
+                    {briefingLoading ? "Thinking…" : "Regenerate"}
+                  </button>
+                )}
+              </div>
+
+              {!geminiKey && (
+                <div>
+                  <p className="text-sm mb-3" style={{ color: "#9C97C4" }}>
+                    Get a free AI-written market summary here each day — index context, risk-on/off read, and callouts on your watchlist. Runs on Google's free Gemini API (no credit card, no cost).
+                  </p>
+                  <div className="flex gap-2 max-w-md">
+                    <input
+                      value={geminiKeyDraft}
+                      onChange={(e) => setGeminiKeyDraft(e.target.value)}
+                      placeholder="Paste a free Gemini API key (aistudio.google.com)"
+                      className="flex-1 px-3 py-2 rounded-md text-sm font-mono outline-none"
+                      style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
+                    />
+                    <button
+                      onClick={saveGeminiKey}
+                      disabled={!geminiKeyDraft.trim()}
+                      className="px-4 rounded-md text-sm font-semibold disabled:opacity-40"
+                      style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819" }}
+                    >
+                      Enable
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {geminiKey && briefingLoading && !briefing && (
+                <p className="text-sm" style={{ color: "#8B87A8" }}>Reading today's headlines and your watchlist…</p>
+              )}
+
+              {geminiKey && briefingError && (
+                <p className="text-sm" style={{ color: "#FF5C82" }}>{briefingError}</p>
+              )}
+
+              {geminiKey && briefing && (
+                <div>
+                  <p className="text-base leading-relaxed mb-3" style={{ color: "#DAD5F5" }}>{briefing.summary}</p>
+                  {briefing.riskReason && (
+                    <p className="text-sm mb-3" style={{ color: "#8B87A8" }}><span style={{ color: "#9C97C4" }}>Why:</span> {briefing.riskReason}</p>
+                  )}
+                  {briefing.callouts && briefing.callouts.length > 0 && (
+                    <div className="mt-3 pt-3 space-y-2" style={{ borderTop: "1px solid rgba(148,130,255,0.14)" }}>
+                      {briefing.callouts.map((c, i) => (
+                        <div key={i} className="flex gap-2.5 text-sm">
+                          <span className="font-mono font-semibold shrink-0" style={{ color: "#F1EEFB" }}>{c.symbol}</span>
+                          <span style={{ color: "#9C97C4" }}>{c.note}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs mt-4" style={{ color: "#655F8C" }}>
+                    AI-generated context, not financial advice · Generated {new Date(briefing.generatedAt).toLocaleTimeString()}
+                    {briefing.simulatedNote ? " · based on simulated data" : ""}
+                  </p>
+                </div>
+              )}
+            </div>
+
             {/* Index strip */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {INDEX_PROXIES.map((idx) => {
@@ -1040,6 +1300,32 @@ export default function MarketDesk() {
                 Use simulated data instead
               </button>
             )}
+
+            <div className="mt-5 pt-5" style={{ borderTop: "1px solid rgba(148,130,255,0.16)" }}>
+              <label className="text-sm uppercase tracking-wider" style={{ color: "#8B87A8" }}>Gemini API key (for AI briefing)</label>
+              <p className="text-sm mt-1 mb-2" style={{ color: "#655F8C" }}>Free, from aistudio.google.com — no credit card.</p>
+              <div className="flex gap-2 mb-2">
+                <input
+                  value={geminiKeyDraft}
+                  onChange={(e) => setGeminiKeyDraft(e.target.value)}
+                  placeholder="Paste your Gemini API key"
+                  className="flex-1 px-3 py-2 rounded-md text-base font-mono outline-none"
+                  style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setGeminiKeyDraft("")}
+                  title="Clear"
+                  className="px-2.5 rounded-md text-sm"
+                  style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
+                >
+                  Clear
+                </button>
+              </div>
+              <button onClick={saveGeminiKey} className="w-full py-2 rounded-md text-sm font-semibold" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
+                Save Gemini key
+              </button>
+            </div>
 
             <div className="mt-5 pt-5" style={{ borderTop: "1px solid rgba(148,130,255,0.16)" }}>
               <h3 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-base font-semibold mb-1">Move to another device</h3>
