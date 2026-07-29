@@ -205,7 +205,7 @@ function ChangeTag({ value, pct, size = "sm" }) {
   const Icon = (pct ?? value) > 0 ? ChevronUp : (pct ?? value) < 0 ? ChevronDown : Circle;
   return (
     <span
-      className={`inline-flex items-center gap-0.5 font-mono ${size === "lg" ? "text-base" : "text-xs"}`}
+      className={`inline-flex items-center gap-0.5 font-mono ${size === "lg" ? "text-lg" : "text-sm"}`}
       style={{ color }}
     >
       <Icon size={size === "lg" ? 16 : 12} strokeWidth={2.5} />
@@ -219,7 +219,7 @@ function SortHeader({ label, field, sortField, sortDir, onSort, align = "left" }
   return (
     <th
       onClick={() => onSort(field)}
-      className={`cursor-pointer select-none px-3 py-2 text-[11px] uppercase tracking-wider font-medium whitespace-nowrap`}
+      className={`cursor-pointer select-none px-3 py-2 text-sm uppercase tracking-wider font-medium whitespace-nowrap`}
       style={{ color: active ? "#A78BFA" : "#8B87A8", textAlign: align }}
     >
       <span className="inline-flex items-center gap-1">
@@ -257,6 +257,12 @@ export default function MarketDesk() {
 
   const [wlSort, setWlSort] = useState({ field: "symbol", dir: "asc" });
   const [pfSort, setPfSort] = useState({ field: "symbol", dir: "asc" });
+
+  const [backupCode, setBackupCode] = useState("");
+  const [backupCopied, setBackupCopied] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importMsg, setImportMsg] = useState("");
+  const [includeKeyInBackup, setIncludeKeyInBackup] = useState(true);
 
   const intervalRef = useRef(null);
 
@@ -404,6 +410,63 @@ export default function MarketDesk() {
     persistSettings(apiKey, autoRefresh, false);
     setShowSettings(true);
   }
+
+  function generateBackupCode() {
+    const payload = {
+      v: 1,
+      watchlist,
+      portfolio,
+      autoRefresh,
+      simulated,
+      apiKey: includeKeyInBackup ? apiKey : "",
+    };
+    try {
+      const code = btoa(encodeURIComponent(JSON.stringify(payload)));
+      setBackupCode(code);
+      setBackupCopied(false);
+    } catch (e) {
+      setBackupCode("");
+    }
+  }
+
+  async function copyBackupCode() {
+    try {
+      await navigator.clipboard.writeText(backupCode);
+      setBackupCopied(true);
+    } catch (e) {
+      setBackupCopied(false);
+    }
+  }
+
+  function importBackupCode() {
+    setImportMsg("");
+    try {
+      const decoded = JSON.parse(decodeURIComponent(atob(importText.trim())));
+      if (!decoded || typeof decoded !== "object") throw new Error("bad shape");
+      if (Array.isArray(decoded.watchlist)) {
+        setWatchlist(decoded.watchlist);
+        safeStorageSet("md-watchlist", decoded.watchlist);
+      }
+      if (Array.isArray(decoded.portfolio)) {
+        setPortfolio(decoded.portfolio);
+        safeStorageSet("md-portfolio", decoded.portfolio);
+      }
+      const nextKey = decoded.apiKey || apiKey;
+      const nextAuto = !!decoded.autoRefresh;
+      const nextSim = decoded.apiKey ? false : simulated;
+      setApiKey(nextKey);
+      setKeyDraft(nextKey);
+      setAutoRefresh(nextAuto);
+      if (decoded.apiKey) setSimulated(false);
+      persistSettings(nextKey, nextAuto, nextSim);
+      setQuotes({});
+      setImportText("");
+      setImportMsg("Imported! Your watchlist and portfolio are restored.");
+    } catch (e) {
+      setImportMsg("That code didn't look right — make sure you copied the whole thing.");
+    }
+  }
+
   function toggleAutoRefresh() {
     const next = !autoRefresh;
     setAutoRefresh(next);
@@ -513,35 +576,35 @@ export default function MarketDesk() {
         <div className="max-w-md w-full rounded-lg p-8" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
           <div className="flex items-center gap-2 mb-1">
             <div style={{ width: 8, height: 8, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 10px 2px rgba(214,95,224,0.6)" }} className="rounded-full" />
-            <span className="uppercase tracking-widest text-xs" style={{ color: "#8B87A8", fontFamily: "JetBrains Mono, monospace" }}>Market Desk</span>
+            <span className="uppercase tracking-widest text-sm" style={{ color: "#8B87A8", fontFamily: "JetBrains Mono, monospace" }}>Market Desk</span>
           </div>
-          <h1 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-2xl font-semibold mb-2">Connect a data feed</h1>
+          <h1 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-3xl font-semibold mb-2">Connect a data feed</h1>
           {IN_ARTIFACT_SANDBOX ? (
             <>
-              <p className="text-sm mb-3" style={{ color: "#9C97C4" }}>
+              <p className="text-base mb-3" style={{ color: "#9C97C4" }}>
                 This dashboard is built to pull live quotes from Finnhub's free API. Heads up: this artifact's sandbox blocks outgoing requests to external sites, so live data won't load here no matter what key you use — that's a platform restriction, not a problem with your account.
               </p>
               <button
                 onClick={enterSimulatedMode}
-                className="w-full py-2.5 rounded-md text-sm font-semibold mb-4"
+                className="w-full py-2.5 rounded-md text-base font-semibold mb-4"
                 style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontFamily: "Space Grotesk, sans-serif", boxShadow: "0 8px 24px -6px rgba(214,95,224,0.5)" }}
               >
                 Use simulated data now
               </button>
-              <details className="text-sm" style={{ color: "#9C97C4" }}>
+              <details className="text-base" style={{ color: "#9C97C4" }}>
                 <summary className="cursor-pointer select-none" style={{ color: "#8B87A8" }}>Have a Finnhub key anyway? (won't fetch live here, but saved for later)</summary>
                 <div className="mt-3">
                   <input
                     value={keyDraft}
                     onChange={(e) => setKeyDraft(e.target.value)}
                     placeholder="Paste your Finnhub API key"
-                    className="w-full px-3 py-2.5 rounded-md mb-3 text-sm font-mono outline-none"
+                    className="w-full px-3 py-2.5 rounded-md mb-3 text-base font-mono outline-none"
                     style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
                   />
                   <button
                     onClick={saveApiKey}
                     disabled={!keyDraft.trim()}
-                    className="w-full py-2 rounded-md text-sm font-medium disabled:opacity-40"
+                    className="w-full py-2 rounded-md text-base font-medium disabled:opacity-40"
                     style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#F1EEFB" }}
                   >
                     Save key
@@ -551,10 +614,10 @@ export default function MarketDesk() {
             </>
           ) : (
             <>
-              <p className="text-sm mb-4" style={{ color: "#9C97C4" }}>
+              <p className="text-base mb-4" style={{ color: "#9C97C4" }}>
                 This dashboard pulls live quotes from Finnhub's free API — real-time US stock data, 60 requests/minute, no credit card required.
               </p>
-              <ol className="text-sm mb-5 space-y-1.5 list-decimal list-inside" style={{ color: "#9C97C4" }}>
+              <ol className="text-base mb-5 space-y-1.5 list-decimal list-inside" style={{ color: "#9C97C4" }}>
                 <li>Go to <span style={{ color: "#A78BFA" }}>finnhub.io/register</span> and create a free account</li>
                 <li>Copy the API key from your dashboard</li>
                 <li>Paste it below</li>
@@ -563,25 +626,25 @@ export default function MarketDesk() {
                 value={keyDraft}
                 onChange={(e) => setKeyDraft(e.target.value)}
                 placeholder="Paste your Finnhub API key"
-                className="w-full px-3 py-2.5 rounded-md mb-3 text-sm font-mono outline-none"
+                className="w-full px-3 py-2.5 rounded-md mb-3 text-base font-mono outline-none"
                 style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
               />
               <button
                 onClick={saveApiKey}
                 disabled={!keyDraft.trim()}
-                className="w-full py-2.5 rounded-md text-sm font-semibold disabled:opacity-40 mb-3"
+                className="w-full py-2.5 rounded-md text-base font-semibold disabled:opacity-40 mb-3"
                 style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontFamily: "Space Grotesk, sans-serif", boxShadow: "0 8px 24px -6px rgba(214,95,224,0.5)" }}
               >
                 Connect
               </button>
               <button
                 onClick={enterSimulatedMode}
-                className="w-full py-2 rounded-md text-sm font-medium"
+                className="w-full py-2 rounded-md text-base font-medium"
                 style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
               >
                 Or use simulated data instead
               </button>
-              <p className="text-xs mt-3" style={{ color: "#655F8C" }}>Your key is stored only in this browser's local storage. It's never sent anywhere but Finnhub.</p>
+              <p className="text-sm mt-3" style={{ color: "#655F8C" }}>Your key is stored only in this browser's local storage. It's never sent anywhere but Finnhub.</p>
             </>
           )}
         </div>
@@ -611,7 +674,7 @@ export default function MarketDesk() {
             const q = quotes[sym];
             const color = changeColor(q?.dp);
             return (
-              <span key={idx} className="inline-flex items-center gap-1.5 px-4 text-xs font-mono" style={{ color: "#9C97C4" }}>
+              <span key={idx} className="inline-flex items-center gap-1.5 px-4 text-sm font-mono" style={{ color: "#9C97C4" }}>
                 <span style={{ color: "#F1EEFB", fontWeight: 600 }}>{sym}</span>
                 <span>{q ? fmt(q.c) : "—"}</span>
                 <span style={{ color }}>{q ? fmtPct(q.dp) : ""}</span>
@@ -628,37 +691,37 @@ export default function MarketDesk() {
           <div>
             <div className="flex items-center gap-2">
               <div style={{ width: 8, height: 8, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 10px 2px rgba(214,95,224,0.6)" }} className="rounded-full" />
-              <span className="uppercase tracking-widest text-[11px]" style={{ color: "#8B87A8", fontFamily: "JetBrains Mono, monospace" }}>Market Desk</span>
+              <span className="uppercase tracking-widest text-sm" style={{ color: "#8B87A8", fontFamily: "JetBrains Mono, monospace" }}>Market Desk</span>
               {simulated && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(167,139,250,0.15)", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", border: "1px solid rgba(167,139,250,0.3)" }}>
+                <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "rgba(167,139,250,0.15)", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", border: "1px solid rgba(167,139,250,0.3)" }}>
                   SIMULATED DATA
                 </span>
               )}
             </div>
-            <h1 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-xl font-semibold">Personal Trading Dashboard</h1>
+            <h1 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-2xl font-semibold">Personal Trading Dashboard</h1>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs font-mono" style={{ color: "#655F8C" }}>
+          <span className="text-sm font-mono" style={{ color: "#655F8C" }}>
             {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Not yet updated"}
           </span>
           {simulated && (
             <button
               onClick={exitSimulatedMode}
-              className="text-xs px-2.5 py-1.5 rounded-md"
+              className="text-sm px-2.5 py-1.5 rounded-md"
               style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
             >
               Switch to live key
             </button>
           )}
-          <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none" style={{ color: "#9C97C4" }}>
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer select-none" style={{ color: "#9C97C4" }}>
             <input type="checkbox" checked={autoRefresh} onChange={toggleAutoRefresh} className="accent-current" style={{ accentColor: "#A78BFA" }} />
             Auto-refresh
           </label>
           <button
             onClick={fetchAll}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium"
             style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#F1EEFB" }}
           >
             <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
@@ -671,12 +734,12 @@ export default function MarketDesk() {
       </div>
 
       {error && (
-        <div className="mx-5 mt-4 px-4 py-2.5 rounded-md text-sm flex items-center justify-between gap-4 flex-wrap" style={{ background: "rgba(255,92,130,0.1)", border: "1px solid rgba(255,92,130,0.3)", color: "#FFA8BE" }}>
+        <div className="mx-5 mt-4 px-4 py-2.5 rounded-md text-base flex items-center justify-between gap-4 flex-wrap" style={{ background: "rgba(255,92,130,0.1)", border: "1px solid rgba(255,92,130,0.3)", color: "#FFA8BE" }}>
           <span>{error}</span>
           {!simulated && (
             <button
               onClick={enterSimulatedMode}
-              className="text-xs px-3 py-1.5 rounded-md whitespace-nowrap font-medium"
+              className="text-sm px-3 py-1.5 rounded-md whitespace-nowrap font-medium"
               style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}
             >
               Use simulated data instead
@@ -695,7 +758,7 @@ export default function MarketDesk() {
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className="px-3.5 py-2 text-sm rounded-t-md font-medium"
+            className="px-3.5 py-2 text-base rounded-t-md font-medium"
             style={{
               color: tab === t.id ? "#F1EEFB" : "#8B87A8",
               borderBottom: tab === t.id ? "2px solid #C77FE8" : "2px solid transparent",
@@ -718,8 +781,8 @@ export default function MarketDesk() {
                 const positive = (q?.dp ?? 0) >= 0;
                 return (
                   <div key={idx.symbol} className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
-                    <div className="text-xs mb-1" style={{ color: "#8B87A8" }}>{idx.label} · {idx.symbol}</div>
-                    <div className="text-2xl font-mono font-semibold" style={{ color: "#F1EEFB" }}>{q ? fmt(q.c) : "—"}</div>
+                    <div className="text-sm mb-1" style={{ color: "#8B87A8" }}>{idx.label} · {idx.symbol}</div>
+                    <div className="text-3xl font-mono font-semibold" style={{ color: "#F1EEFB" }}>{q ? fmt(q.c) : "—"}</div>
                     <ChangeTag pct={q?.dp} size="lg" />
                     <IndexSparkline series={indexSeries[idx.symbol]} positive={positive} />
                   </div>
@@ -732,15 +795,15 @@ export default function MarketDesk() {
               <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
                 <div className="flex items-center gap-1.5 mb-3">
                   <TrendingUp size={14} color="#34E7A6" />
-                  <span className="text-xs uppercase tracking-wider font-medium" style={{ color: "#9C97C4" }}>Top gainers</span>
+                  <span className="text-sm uppercase tracking-wider font-medium" style={{ color: "#9C97C4" }}>Top gainers</span>
                 </div>
                 <div className="space-y-2">
-                  {gainers.length === 0 && <div className="text-sm" style={{ color: "#655F8C" }}>No data yet</div>}
+                  {gainers.length === 0 && <div className="text-base" style={{ color: "#655F8C" }}>No data yet</div>}
                   {gainers.map((r) => (
-                    <div key={r.symbol} className="flex items-center justify-between text-sm">
+                    <div key={r.symbol} className="flex items-center justify-between text-base">
                       <span className="font-mono" style={{ color: "#F1EEFB" }}>{r.symbol}</span>
                       <span className="flex items-center gap-3">
-                        <span className="font-mono text-xs" style={{ color: "#9C97C4" }}>{r.price !== null ? fmt(r.price) : "—"}</span>
+                        <span className="font-mono text-sm" style={{ color: "#9C97C4" }}>{r.price !== null ? fmt(r.price) : "—"}</span>
                         <ChangeTag pct={r.pct} />
                       </span>
                     </div>
@@ -750,15 +813,15 @@ export default function MarketDesk() {
               <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
                 <div className="flex items-center gap-1.5 mb-3">
                   <TrendingDown size={14} color="#FF5C82" />
-                  <span className="text-xs uppercase tracking-wider font-medium" style={{ color: "#9C97C4" }}>Top losers</span>
+                  <span className="text-sm uppercase tracking-wider font-medium" style={{ color: "#9C97C4" }}>Top losers</span>
                 </div>
                 <div className="space-y-2">
-                  {losers.length === 0 && <div className="text-sm" style={{ color: "#655F8C" }}>No data yet</div>}
+                  {losers.length === 0 && <div className="text-base" style={{ color: "#655F8C" }}>No data yet</div>}
                   {losers.map((r) => (
-                    <div key={r.symbol} className="flex items-center justify-between text-sm">
+                    <div key={r.symbol} className="flex items-center justify-between text-base">
                       <span className="font-mono" style={{ color: "#F1EEFB" }}>{r.symbol}</span>
                       <span className="flex items-center gap-3">
-                        <span className="font-mono text-xs" style={{ color: "#9C97C4" }}>{r.price !== null ? fmt(r.price) : "—"}</span>
+                        <span className="font-mono text-sm" style={{ color: "#9C97C4" }}>{r.price !== null ? fmt(r.price) : "—"}</span>
                         <ChangeTag pct={r.pct} />
                       </span>
                     </div>
@@ -769,37 +832,56 @@ export default function MarketDesk() {
 
             {/* Sector heatmap */}
             <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
-              <div className="text-xs uppercase tracking-wider font-medium mb-3" style={{ color: "#9C97C4" }}>Watchlist heatmap by sector</div>
-              <div style={{ columns: "1", columnGap: "1rem" }} className="heatmap-columns">
-                {Object.entries(sectorGroups).map(([sector, rows]) => (
-                  <div key={sector} style={{ breakInside: "avoid" }} className="mb-4">
-                    <div className="text-[11px] mb-1.5" style={{ color: "#655F8C", fontFamily: "JetBrains Mono, monospace" }}>{sector.toUpperCase()} · {rows.length}</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(64px, 1fr))", gap: "6px" }}>
-                      {rows.map((r) => {
-                        const pct = r.pct ?? 0;
-                        const intensity = Math.min(Math.abs(pct) / 3, 1);
-                        const bg = r.pct === null ? "rgba(148,130,255,0.08)" : pct >= 0
-                          ? `rgba(52, 231, 166, ${0.14 + intensity * 0.5})`
-                          : `rgba(255, 92, 130, ${0.14 + intensity * 0.5})`;
-                        const glow = r.pct === null ? "none" : pct >= 0
-                          ? `0 0 12px -4px rgba(52,231,166,${0.2 + intensity * 0.4})`
-                          : `0 0 12px -4px rgba(255,92,130,${0.2 + intensity * 0.4})`;
-                        return (
-                          <div
-                            key={r.symbol}
-                            className="rounded-md px-2 py-1.5"
-                            style={{ background: bg, border: "1px solid rgba(255,255,255,0.07)", boxShadow: glow }}
-                          >
-                            <div className="text-[11px] font-mono font-semibold leading-tight" style={{ color: "#F1EEFB" }}>{r.symbol}</div>
-                            <div className="text-[10px] font-mono leading-tight" style={{ color: "#DAD5F5" }}>{r.pct !== null ? fmtPct(r.pct) : "—"}</div>
-                          </div>
-                        );
-                      })}
+              <div className="flex items-center gap-2 mb-4">
+                <div style={{ width: 6, height: 6, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 8px 1px rgba(214,95,224,0.5)" }} className="rounded-full" />
+                <div className="text-base uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Watchlist heatmap by sector</div>
+              </div>
+              <div style={{ columns: "1", columnGap: "1.25rem" }} className="heatmap-columns">
+                {Object.entries(sectorGroups).map(([sector, rows]) => {
+                  const validRows = rows.filter((r) => r.pct !== null);
+                  const avgSectorPct = validRows.length ? validRows.reduce((a, r) => a + r.pct, 0) / validRows.length : null;
+                  return (
+                    <div key={sector} style={{ breakInside: "avoid" }} className="mb-5">
+                      <div className="flex items-center justify-between mb-2 pb-1.5" style={{ borderBottom: "1px solid rgba(148,130,255,0.14)" }}>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-sm font-semibold tracking-wide" style={{ color: "#DAD5F5", fontFamily: "JetBrains Mono, monospace" }}>{sector.toUpperCase()}</span>
+                          <span className="text-xs" style={{ color: "#655F8C" }}>{rows.length} {rows.length === 1 ? "stock" : "stocks"}</span>
+                        </div>
+                        {avgSectorPct !== null && <ChangeTag pct={avgSectorPct} />}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(102px, 1fr))", gap: "10px" }}>
+                        {rows.map((r) => {
+                          const pct = r.pct ?? 0;
+                          const intensity = Math.min(Math.abs(pct) / 3, 1);
+                          const positive = pct >= 0;
+                          const bg = r.pct === null ? "rgba(148,130,255,0.08)" : positive
+                            ? `rgba(52, 231, 166, ${0.16 + intensity * 0.5})`
+                            : `rgba(255, 92, 130, ${0.16 + intensity * 0.5})`;
+                          const glow = r.pct === null ? "none" : positive
+                            ? `0 4px 18px -6px rgba(52,231,166,${0.25 + intensity * 0.45})`
+                            : `0 4px 18px -6px rgba(255,92,130,${0.25 + intensity * 0.45})`;
+                          const borderColor = r.pct === null ? "rgba(255,255,255,0.07)" : positive
+                            ? `rgba(52,231,166,${0.25 + intensity * 0.35})`
+                            : `rgba(255,92,130,${0.25 + intensity * 0.35})`;
+                          return (
+                            <div
+                              key={r.symbol}
+                              className="rounded-xl px-3 py-2.5"
+                              style={{ background: bg, border: `1px solid ${borderColor}`, boxShadow: glow }}
+                            >
+                              <div className="text-base font-mono font-bold leading-tight" style={{ color: "#F1EEFB" }}>{r.symbol}</div>
+                              <div className="text-sm font-mono leading-tight mt-1" style={{ color: "#B9B4DC" }}>{r.price !== null ? fmt(r.price) : "—"}</div>
+                              <div className="mt-1"><ChangeTag pct={r.pct} /></div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
+
           </div>
         )}
 
@@ -816,14 +898,14 @@ export default function MarketDesk() {
               <Field label="Symbol"><input value={newHoldingSymbol} onChange={(e) => setNewHoldingSymbol(e.target.value)} placeholder="AAPL" className="input" /></Field>
               <Field label="Shares"><input value={newShares} onChange={(e) => setNewShares(e.target.value)} placeholder="10" type="number" step="any" className="input w-24" /></Field>
               <Field label="Cost basis / share"><input value={newCost} onChange={(e) => setNewCost(e.target.value)} placeholder="150.00" type="number" step="any" className="input w-32" /></Field>
-              <button type="submit" className="flex items-center gap-1 px-3 py-2 rounded-md text-sm font-medium" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
+              <button type="submit" className="flex items-center gap-1 px-3 py-2 rounded-md text-base font-medium" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
                 <Plus size={14} /> Add holding
               </button>
             </form>
 
             <div className="rounded-lg overflow-hidden md-scroll overflow-x-auto" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
               {portfolioRows.length === 0 ? (
-                <div className="p-8 text-center text-sm" style={{ color: "#655F8C" }}>No holdings yet — add one above to start tracking P&L.</div>
+                <div className="p-8 text-center text-base" style={{ color: "#655F8C" }}>No holdings yet — add one above to start tracking P&L.</div>
               ) : (
                 <table>
                   <thead>
@@ -843,13 +925,13 @@ export default function MarketDesk() {
                     {sortedPortfolio.map((r) => (
                       <tr key={r.id} style={{ borderBottom: "1px solid rgba(148,130,255,0.08)" }}>
                         <td className="px-3 py-2.5">
-                          <div className="font-mono font-semibold text-sm" style={{ color: "#F1EEFB" }}>{r.symbol}</div>
-                          <div className="text-[10px]" style={{ color: "#655F8C" }}>{r.sector}</div>
+                          <div className="font-mono font-semibold text-base" style={{ color: "#F1EEFB" }}>{r.symbol}</div>
+                          <div className="text-xs" style={{ color: "#655F8C" }}>{r.sector}</div>
                         </td>
-                        <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#DAD5F5" }}>{r.shares}</td>
-                        <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#DAD5F5" }}>{fmt(r.cost)}</td>
-                        <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#DAD5F5" }}>{r.price !== null ? fmt(r.price) : "—"}</td>
-                        <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#F1EEFB" }}>{r.value !== null ? fmtMoney(r.value) : "—"}</td>
+                        <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#DAD5F5" }}>{r.shares}</td>
+                        <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#DAD5F5" }}>{fmt(r.cost)}</td>
+                        <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#DAD5F5" }}>{r.price !== null ? fmt(r.price) : "—"}</td>
+                        <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#F1EEFB" }}>{r.value !== null ? fmtMoney(r.value) : "—"}</td>
                         <td className="px-3 py-2.5 text-right"><ChangeTag value={r.pnl} /></td>
                         <td className="px-3 py-2.5 text-right"><ChangeTag pct={r.pnlPct} /></td>
                         <td className="px-3 py-2.5 text-right"><ChangeTag pct={r.dayPct} /></td>
@@ -871,7 +953,7 @@ export default function MarketDesk() {
           <div className="space-y-4">
             <form onSubmit={addWatchSymbol} className="flex gap-2">
               <input value={newSymbol} onChange={(e) => setNewSymbol(e.target.value)} placeholder="Add symbol, e.g. NVDA" className="input flex-1 max-w-xs" />
-              <button type="submit" className="flex items-center gap-1 px-3 py-2 rounded-md text-sm font-medium" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
+              <button type="submit" className="flex items-center gap-1 px-3 py-2 rounded-md text-base font-medium" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
                 <Plus size={14} /> Add
               </button>
             </form>
@@ -893,14 +975,14 @@ export default function MarketDesk() {
                 <tbody>
                   {sortedWatch.map((r) => (
                     <tr key={r.symbol} style={{ borderBottom: "1px solid rgba(148,130,255,0.08)" }}>
-                      <td className="px-3 py-2.5 font-mono font-semibold text-sm" style={{ color: "#F1EEFB" }}>{r.symbol}</td>
-                      <td className="px-3 py-2.5 text-xs" style={{ color: "#8B87A8" }}>{r.sector}</td>
-                      <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#DAD5F5" }}>{r.price !== null ? fmt(r.price) : "—"}</td>
+                      <td className="px-3 py-2.5 font-mono font-semibold text-base" style={{ color: "#F1EEFB" }}>{r.symbol}</td>
+                      <td className="px-3 py-2.5 text-sm" style={{ color: "#8B87A8" }}>{r.sector}</td>
+                      <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#DAD5F5" }}>{r.price !== null ? fmt(r.price) : "—"}</td>
                       <td className="px-3 py-2.5 text-right"><ChangeTag value={r.change} /></td>
                       <td className="px-3 py-2.5 text-right"><ChangeTag pct={r.pct} /></td>
-                      <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#8B87A8" }}>{r.high !== null ? fmt(r.high) : "—"}</td>
-                      <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#8B87A8" }}>{r.low !== null ? fmt(r.low) : "—"}</td>
-                      <td className="px-3 py-2.5 text-right font-mono text-sm" style={{ color: "#8B87A8" }}>{r.prevClose !== null ? fmt(r.prevClose) : "—"}</td>
+                      <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#8B87A8" }}>{r.high !== null ? fmt(r.high) : "—"}</td>
+                      <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#8B87A8" }}>{r.low !== null ? fmt(r.low) : "—"}</td>
+                      <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#8B87A8" }}>{r.prevClose !== null ? fmt(r.prevClose) : "—"}</td>
                       <td className="px-2 py-2.5 text-right">
                         <button onClick={() => removeWatchSymbol(r.symbol)} className="p-1 rounded hover:opacity-100 opacity-50">
                           <X size={13} color="#9C97C4" />
@@ -917,14 +999,14 @@ export default function MarketDesk() {
 
       {showSettings && (
         <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={() => setShowSettings(false)}>
-          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-6" style={{ background: "rgba(34,30,72,0.7)", border: "1px solid rgba(148,130,255,0.22)", backdropFilter: "blur(20px)", boxShadow: "0 20px 60px -20px rgba(107,70,229,0.5)" }}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-lg p-6 md-scroll" style={{ background: "rgba(34,30,72,0.7)", border: "1px solid rgba(148,130,255,0.22)", backdropFilter: "blur(20px)", boxShadow: "0 20px 60px -20px rgba(107,70,229,0.5)", maxHeight: "85vh", overflowY: "auto" }}>
             <div className="flex items-center justify-between mb-4">
-              <h2 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-base font-semibold">Settings</h2>
+              <h2 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-lg font-semibold">Settings</h2>
               <button onClick={() => setShowSettings(false)}><X size={16} color="#9C97C4" /></button>
             </div>
-            <label className="text-xs uppercase tracking-wider" style={{ color: "#8B87A8" }}>Finnhub API key</label>
+            <label className="text-sm uppercase tracking-wider" style={{ color: "#8B87A8" }}>Finnhub API key</label>
             {IN_ARTIFACT_SANDBOX && (
-              <p className="text-xs mt-1 mb-2" style={{ color: "#655F8C" }}>
+              <p className="text-sm mt-1 mb-2" style={{ color: "#655F8C" }}>
                 Note: this sandbox blocks external requests, so a live key won't actually fetch data here.
               </p>
             )}
@@ -932,32 +1014,100 @@ export default function MarketDesk() {
               <input
                 value={keyDraft}
                 onChange={(e) => setKeyDraft(e.target.value)}
-                className="flex-1 px-3 py-2 rounded-md text-sm font-mono outline-none"
+                className="flex-1 px-3 py-2 rounded-md text-base font-mono outline-none"
                 style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB" }}
               />
               <button
                 type="button"
                 onClick={() => setKeyDraft("")}
                 title="Clear"
-                className="px-2.5 rounded-md text-xs"
+                className="px-2.5 rounded-md text-sm"
                 style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
               >
                 Clear
               </button>
             </div>
-            <p className="text-[11px] mb-3" style={{ color: "#655F8C" }}>{keyDraft.length} characters — if this looks longer than your actual key, hit Clear and paste it fresh.</p>
-            <button onClick={saveApiKey} className="w-full py-2 rounded-md text-sm font-semibold mb-2" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
+            <p className="text-sm mb-3" style={{ color: "#655F8C" }}>{keyDraft.length} characters — if this looks longer than your actual key, hit Clear and paste it fresh.</p>
+            <button onClick={saveApiKey} className="w-full py-2 rounded-md text-base font-semibold mb-2" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
               Save
             </button>
             {!simulated && (
               <button
                 onClick={() => { enterSimulatedMode(); setShowSettings(false); }}
-                className="w-full py-2 rounded-md text-sm font-medium"
+                className="w-full py-2 rounded-md text-base font-medium"
                 style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#9C97C4" }}
               >
                 Use simulated data instead
               </button>
             )}
+
+            <div className="mt-5 pt-5" style={{ borderTop: "1px solid rgba(148,130,255,0.16)" }}>
+              <h3 style={{ fontFamily: "Space Grotesk, sans-serif", color: "#F1EEFB" }} className="text-base font-semibold mb-1">Move to another device</h3>
+              <p className="text-sm mb-3" style={{ color: "#8B87A8" }}>
+                Generate a backup code here, then paste it in on your phone or another browser to bring over your watchlist, portfolio, and settings — no retyping.
+              </p>
+
+              <details className="text-base mb-3" style={{ color: "#9C97C4" }}>
+                <summary className="cursor-pointer select-none font-medium" style={{ color: "#DAD5F5" }}>Get a code from this device</summary>
+                <div className="mt-2.5">
+                  <label className="flex items-center gap-2 text-sm mb-2" style={{ color: "#8B87A8" }}>
+                    <input type="checkbox" checked={includeKeyInBackup} onChange={(e) => setIncludeKeyInBackup(e.target.checked)} style={{ accentColor: "#A78BFA" }} />
+                    Include my API key (plain text — only paste this code somewhere you trust)
+                  </label>
+                  <button
+                    onClick={generateBackupCode}
+                    className="w-full py-2 rounded-md text-base font-medium mb-2"
+                    style={{ background: "rgba(148,130,255,0.08)", border: "1px solid rgba(148,130,255,0.22)", color: "#F1EEFB" }}
+                  >
+                    Generate code
+                  </button>
+                  {backupCode && (
+                    <>
+                      <textarea
+                        readOnly
+                        value={backupCode}
+                        rows={4}
+                        className="w-full px-2.5 py-2 rounded-md text-sm font-mono outline-none mb-2"
+                        style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#DAD5F5", resize: "none" }}
+                        onFocus={(e) => e.target.select()}
+                      />
+                      <button
+                        onClick={copyBackupCode}
+                        className="w-full py-2 rounded-md text-base font-semibold"
+                        style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819" }}
+                      >
+                        {backupCopied ? "Copied!" : "Copy code"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </details>
+
+              <details className="text-base" style={{ color: "#9C97C4" }}>
+                <summary className="cursor-pointer select-none font-medium" style={{ color: "#DAD5F5" }}>Paste a code on this device</summary>
+                <div className="mt-2.5">
+                  <textarea
+                    value={importText}
+                    onChange={(e) => setImportText(e.target.value)}
+                    placeholder="Paste your backup code here"
+                    rows={4}
+                    className="w-full px-2.5 py-2 rounded-md text-sm font-mono outline-none mb-2"
+                    style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB", resize: "none" }}
+                  />
+                  <button
+                    onClick={importBackupCode}
+                    disabled={!importText.trim()}
+                    className="w-full py-2 rounded-md text-base font-semibold disabled:opacity-40"
+                    style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819" }}
+                  >
+                    Import
+                  </button>
+                  {importMsg && (
+                    <p className="text-sm mt-2" style={{ color: importMsg.startsWith("Imported") ? "#34E7A6" : "#FF5C82" }}>{importMsg}</p>
+                  )}
+                </div>
+              </details>
+            </div>
           </div>
         </div>
       )}
@@ -965,7 +1115,7 @@ export default function MarketDesk() {
       <style>{`
         .input {
           background: rgba(8,7,24,0.7); border: 1px solid rgba(148,130,255,0.2); color: #F1EEFB;
-          border-radius: 6px; padding: 8px 10px; font-size: 13px; outline: none; font-family: 'JetBrains Mono', monospace;
+          border-radius: 6px; padding: 8px 10px; font-size: 15px; outline: none; font-family: 'JetBrains Mono', monospace;
         }
         .input::placeholder { color: #655F8C; }
       `}</style>
@@ -1034,10 +1184,10 @@ function PulseOrb({ value }) {
         />
       </svg>
       <div className="absolute flex flex-col items-center leading-none">
-        <span className="text-[10px] font-mono font-semibold" style={{ color: "#F1EEFB" }}>
+        <span className="text-xs font-mono font-semibold" style={{ color: "#F1EEFB" }}>
           {value > 0 ? "+" : ""}{value.toFixed(2)}%
         </span>
-        <span className="text-[7px] uppercase tracking-wider mt-0.5" style={{ color: "#655F8C" }}>Pulse</span>
+        <span className="text-[10px] uppercase tracking-wider mt-0.5" style={{ color: "#655F8C" }}>Pulse</span>
       </div>
     </div>
   );
@@ -1046,9 +1196,9 @@ function PulseOrb({ value }) {
 function SummaryCard({ label, value, sub, color }) {
   return (
     <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
-      <div className="text-xs mb-1" style={{ color: "#8B87A8" }}>{label}</div>
-      <div className="text-xl font-mono font-semibold" style={{ color: color || "#F1EEFB" }}>{value}</div>
-      {sub && <div className="text-xs font-mono mt-0.5" style={{ color: color || "#8B87A8" }}>{sub}</div>}
+      <div className="text-sm mb-1" style={{ color: "#8B87A8" }}>{label}</div>
+      <div className="text-2xl font-mono font-semibold" style={{ color: color || "#F1EEFB" }}>{value}</div>
+      {sub && <div className="text-sm font-mono mt-0.5" style={{ color: color || "#8B87A8" }}>{sub}</div>}
     </div>
   );
 }
@@ -1056,7 +1206,7 @@ function SummaryCard({ label, value, sub, color }) {
 function Field({ label, children }) {
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-[10px] uppercase tracking-wider" style={{ color: "#655F8C" }}>{label}</label>
+      <label className="text-xs uppercase tracking-wider" style={{ color: "#655F8C" }}>{label}</label>
       {children}
     </div>
   );
