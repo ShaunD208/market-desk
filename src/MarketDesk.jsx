@@ -49,6 +49,48 @@ const FALLBACK_BASE_PRICE = {
   GLW: 47.8, CAH: 148.9, FDXF: 38.5, DELL: 121.6,
 };
 
+function splitCsvLine(line) {
+  const result = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuotes = !inQuotes; continue; }
+    if (ch === "," && !inQuotes) { result.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  result.push(cur);
+  return result;
+}
+
+const CSV_HEADER_ALIASES = {
+  symbol: ["symbol", "ticker", "stock", "sym"],
+  shares: ["shares", "quantity", "qty", "units", "share qty"],
+  cost: ["cost/share", "cost per share", "avg cost", "average cost", "cost basis/share", "cost basis", "cost", "price paid", "avg price"],
+};
+
+function parseCsvHoldings(text) {
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return { rows: [], error: "Paste a header row plus at least one data row." };
+  const headers = splitCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+  const findCol = (aliases) => headers.findIndex((h) => aliases.includes(h));
+  const symbolIdx = findCol(CSV_HEADER_ALIASES.symbol);
+  const sharesIdx = findCol(CSV_HEADER_ALIASES.shares);
+  const costIdx = findCol(CSV_HEADER_ALIASES.cost);
+  if (symbolIdx === -1 || sharesIdx === -1 || costIdx === -1) {
+    return { rows: [], error: "Couldn't find Symbol, Shares, and Cost columns. Try headers like: Symbol, Shares, Cost/Share." };
+  }
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCsvLine(lines[i]);
+    const symbol = (cols[symbolIdx] || "").trim().toUpperCase().replace(/["']/g, "");
+    const shares = parseFloat((cols[sharesIdx] || "").replace(/[",$]/g, ""));
+    const cost = parseFloat((cols[costIdx] || "").replace(/[",$]/g, ""));
+    if (symbol && shares > 0 && cost > 0) rows.push({ symbol, shares, cost });
+  }
+  return { rows, error: rows.length ? null : "No valid rows found — check that Shares and Cost are numbers." };
+}
+
 function seededRandom(seed) {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
@@ -364,6 +406,11 @@ export default function MarketDesk() {
   const [importMsg, setImportMsg] = useState("");
   const [includeKeyInBackup, setIncludeKeyInBackup] = useState(true);
 
+  const [showCsvImport, setShowCsvImport] = useState(false);
+  const [csvText, setCsvText] = useState("");
+  const [csvError, setCsvError] = useState("");
+  const [portfolioHistory, setPortfolioHistory] = useState([]); // [{date, value}]
+
   const [geminiKey, setGeminiKey] = useState("");
   const [geminiKeyDraft, setGeminiKeyDraft] = useState("");
   const [briefing, setBriefing] = useState(null); // { date, summary, riskLabel, riskReason, callouts, generatedAt }
@@ -380,6 +427,7 @@ export default function MarketDesk() {
       const wl = await safeStorageGet("md-watchlist");
       const pf = await safeStorageGet("md-portfolio");
       const br = await safeStorageGet("md-briefing");
+      const ph = await safeStorageGet("md-portfolio-history");
       if (settings?.apiKey) {
         setApiKey(settings.apiKey);
         setKeyDraft(settings.apiKey);
@@ -393,6 +441,7 @@ export default function MarketDesk() {
       if (Array.isArray(wl) && wl.length) setWatchlist(wl);
       if (Array.isArray(pf)) setPortfolio(pf);
       if (br && br.date) setBriefing(br);
+      if (Array.isArray(ph)) setPortfolioHistory(ph);
       setReady(true);
     })();
   }, []);
@@ -432,6 +481,7 @@ export default function MarketDesk() {
         }
         return next;
       });
+      recordPortfolioSnapshot(computedQuotes);
       setLoading(false);
       return;
     }
@@ -475,6 +525,7 @@ export default function MarketDesk() {
         }
         return nextSeries;
       });
+      recordPortfolioSnapshot(computedQuotes);
 
       if (Object.keys(next).length === 0) {
         if (authFailed) {
@@ -673,6 +724,52 @@ export default function MarketDesk() {
     safeStorageSet("md-portfolio", next);
   }
 
+  const csvPreview = csvText.trim() ? parseCsvHoldings(csvText) : { rows: [], error: null };
+
+  function importCsvHoldings() {
+    const { rows, error } = parseCsvHoldings(csvText);
+    if (error) { setCsvError(error); return; }
+    const additions = rows.map((r) => ({
+      id: `${r.symbol}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      symbol: r.symbol, shares: r.shares, cost: r.cost,
+    }));
+    const next = [...portfolio, ...additions];
+    setPortfolio(next);
+    safeStorageSet("md-portfolio", next);
+    setCsvText("");
+    setCsvError("");
+    setShowCsvImport(false);
+  }
+
+  function handleCsvFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setCsvText(ev.target.result || "");
+    reader.readAsText(file);
+  }
+
+  function recordPortfolioSnapshot(computedQuotes) {
+    if (!portfolio.length) return;
+    let total = 0;
+    let hasAny = false;
+    for (const h of portfolio) {
+      const q = computedQuotes[h.symbol];
+      if (q && q.c) { total += q.c * h.shares; hasAny = true; }
+    }
+    if (!hasAny) return;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    setPortfolioHistory((prev) => {
+      const next = [...prev];
+      const idx = next.findIndex((p) => p.date === todayKey);
+      if (idx >= 0) next[idx] = { date: todayKey, value: total };
+      else next.push({ date: todayKey, value: total });
+      const trimmed = next.slice(-180);
+      safeStorageSet("md-portfolio-history", trimmed);
+      return trimmed;
+    });
+  }
+
   function sortRows(rows, sort, accessor) {
     const dir = sort.dir === "asc" ? 1 : -1;
     return [...rows].sort((a, b) => {
@@ -720,6 +817,13 @@ export default function MarketDesk() {
     const prevValue = r.value / (1 + r.dayPct / 100);
     return s + (r.value - prevValue);
   }, 0);
+
+  const portfolioSectorTotals = {};
+  for (const r of portfolioRows) {
+    if (r.value === null) continue;
+    portfolioSectorTotals[r.sector] = (portfolioSectorTotals[r.sector] || 0) + r.value;
+  }
+  const portfolioSectorEntries = Object.entries(portfolioSectorTotals).sort((a, b) => b[1] - a[1]);
 
   const moversSource = watchRows.filter((r) => r.pct !== null);
   const gainers = [...moversSource].sort((a, b) => b.pct - a.pct).slice(0, 5);
@@ -1166,6 +1270,49 @@ export default function MarketDesk() {
               <SummaryCard label="Day change" value={fmtMoney(totalDayChange)} color={changeColor(totalDayChange)} />
             </div>
 
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
+                <div className="text-sm uppercase tracking-wider font-medium mb-3" style={{ color: "#9C97C4" }}>Sector allocation</div>
+                <SectorDonut entries={portfolioSectorEntries} total={totalValue} />
+              </div>
+              <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
+                <div className="text-sm uppercase tracking-wider font-medium mb-3" style={{ color: "#9C97C4" }}>Value over time</div>
+                <PortfolioValueChart history={portfolioHistory} />
+              </div>
+            </div>
+
+            <details className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
+              <summary className="cursor-pointer select-none text-sm font-medium" style={{ color: "#DAD5F5" }}>Import holdings from CSV</summary>
+              <div className="mt-3">
+                <p className="text-sm mb-2" style={{ color: "#8B87A8" }}>
+                  Paste CSV text (from Excel, Google Sheets, or a broker export) with columns for Symbol, Shares, and Cost/Share — or upload a .csv file.
+                </p>
+                <input type="file" accept=".csv,text/csv" onChange={handleCsvFile} className="text-sm mb-2" style={{ color: "#9C97C4" }} />
+                <textarea
+                  value={csvText}
+                  onChange={(e) => { setCsvText(e.target.value); setCsvError(""); }}
+                  placeholder={"Symbol,Shares,Cost/Share\nAAPL,10,150.00\nMSFT,5,320.00"}
+                  rows={5}
+                  className="w-full px-2.5 py-2 rounded-md text-sm font-mono outline-none mb-2"
+                  style={{ background: "rgba(8,7,24,0.7)", border: "1px solid rgba(148,130,255,0.18)", color: "#F1EEFB", resize: "vertical" }}
+                />
+                {csvText.trim() && !csvError && (
+                  <p className="text-sm mb-2" style={{ color: csvPreview.error ? "#FF5C82" : "#34E7A6" }}>
+                    {csvPreview.error || `Found ${csvPreview.rows.length} valid holding${csvPreview.rows.length === 1 ? "" : "s"} ready to import.`}
+                  </p>
+                )}
+                {csvError && <p className="text-sm mb-2" style={{ color: "#FF5C82" }}>{csvError}</p>}
+                <button
+                  onClick={importCsvHoldings}
+                  disabled={!csvText.trim() || !!csvPreview.error || csvPreview.rows.length === 0}
+                  className="px-4 py-2 rounded-md text-sm font-semibold disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819" }}
+                >
+                  Import {csvPreview.rows.length > 0 ? csvPreview.rows.length : ""} holding{csvPreview.rows.length === 1 ? "" : "s"}
+                </button>
+              </div>
+            </details>
+
             <form onSubmit={addHolding} className="flex flex-wrap gap-2 items-end rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
               <Field label="Symbol"><input value={newHoldingSymbol} onChange={(e) => setNewHoldingSymbol(e.target.value)} placeholder="AAPL" className="input" /></Field>
               <Field label="Shares"><input value={newShares} onChange={(e) => setNewShares(e.target.value)} placeholder="10" type="number" step="any" className="input w-24" /></Field>
@@ -1417,6 +1564,86 @@ export default function MarketDesk() {
         }
         .input::placeholder { color: #655F8C; }
       `}</style>
+    </div>
+  );
+}
+
+const DONUT_PALETTE = ["#8B7CF6", "#D65FE0", "#5FA8E0", "#5FE0C7", "#E0C75F", "#E08F5F", "#B85FE0", "#5F7FE0", "#7CE05F", "#E05F9E"];
+
+function SectorDonut({ entries, total }) {
+  if (!entries.length || !total) {
+    return <div className="text-sm" style={{ color: "#655F8C" }}>Add holdings to see your sector breakdown.</div>;
+  }
+  const size = 168, radius = 62, stroke = 24, cx = size / 2, cy = size / 2;
+  const circumference = 2 * Math.PI * radius;
+  let offsetAcc = 0;
+  return (
+    <div className="flex items-center gap-6 flex-wrap">
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)", flexShrink: 0 }}>
+        {entries.map(([sector, value], i) => {
+          const frac = value / total;
+          const dash = frac * circumference;
+          const strokeDashoffset = -offsetAcc;
+          offsetAcc += dash;
+          const color = DONUT_PALETTE[i % DONUT_PALETTE.length];
+          return (
+            <circle
+              key={sector} cx={cx} cy={cy} r={radius} fill="none" stroke={color} strokeWidth={stroke}
+              strokeDasharray={`${dash} ${circumference - dash}`} strokeDashoffset={strokeDashoffset}
+              style={{ filter: `drop-shadow(0 0 4px ${color}77)` }}
+            />
+          );
+        })}
+      </svg>
+      <div className="space-y-2 text-sm">
+        {entries.map(([sector, value], i) => (
+          <div key={sector} className="flex items-center gap-2">
+            <span style={{ width: 9, height: 9, borderRadius: 9999, background: DONUT_PALETTE[i % DONUT_PALETTE.length], flexShrink: 0 }} />
+            <span style={{ color: "#DAD5F5" }}>{sector}</span>
+            <span className="font-mono" style={{ color: "#8B87A8" }}>{((value / total) * 100).toFixed(1)}%</span>
+            <span className="font-mono text-xs" style={{ color: "#655F8C" }}>{fmtMoney(value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PortfolioValueChart({ history }) {
+  if (!history || history.length < 2) {
+    return <div className="text-sm" style={{ color: "#655F8C" }}>Come back after a couple of days to see your value trend build up.</div>;
+  }
+  const values = history.map((h) => h.value);
+  const positive = values[values.length - 1] >= values[0];
+  const w = 600, h = 90, pad = 4;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  const stepX = (w - pad * 2) / (values.length - 1);
+  const pts = values.map((v, i) => {
+    const x = pad + i * stepX;
+    const y = pad + (1 - (v - min) / range) * (h - pad * 2);
+    return [x, y];
+  });
+  const linePath = pts.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const areaPath = `${linePath} L${pts[pts.length - 1][0].toFixed(1)},${h} L${pts[0][0].toFixed(1)},${h} Z`;
+  const color = positive ? "#34E7A6" : "#FF5C82";
+  return (
+    <div>
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={90} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="portfolio-value-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill="url(#portfolio-value-grad)" stroke="none" />
+        <path d={linePath} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+          style={{ filter: `drop-shadow(0 0 4px ${color}) drop-shadow(0 0 8px ${color}88)` }} />
+      </svg>
+      <div className="flex justify-between text-xs mt-1" style={{ color: "#655F8C" }}>
+        <span>{new Date(history[0].date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+        <span>{new Date(history[history.length - 1].date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+      </div>
     </div>
   );
 }
