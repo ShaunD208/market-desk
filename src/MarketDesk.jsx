@@ -509,12 +509,11 @@ export default function MarketDesk() {
     if (!ready || !geminiKey) return;
     const todayStr = new Date().toDateString();
     if (briefing && briefing.date === todayStr) return;
-    if (Object.keys(quotes).length === 0) return;
     if (autoBriefingRef.current === todayStr) return;
     autoBriefingRef.current = todayStr;
     generateBriefing(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, geminiKey, quotes, briefing]);
+  }, [ready, geminiKey, briefing]);
 
   // ---- Handlers ----
   function saveApiKey() {
@@ -1029,6 +1028,19 @@ export default function MarketDesk() {
                     AI-generated context, not financial advice · Generated {new Date(briefing.generatedAt).toLocaleTimeString()}
                     {briefing.simulatedNote ? " · based on simulated data" : ""}
                   </p>
+                </div>
+              )}
+
+              {geminiKey && !briefing && !briefingLoading && !briefingError && (
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <p className="text-sm" style={{ color: "#8B87A8" }}>Connected — nothing generated yet today.</p>
+                  <button
+                    onClick={() => generateBriefing(true)}
+                    className="px-3.5 py-1.5 rounded-md text-sm font-semibold"
+                    style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819" }}
+                  >
+                    Generate now
+                  </button>
                 </div>
               )}
             </div>
