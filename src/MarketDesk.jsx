@@ -236,6 +236,40 @@ async function fetchMarketHeadlines() {
   return headlines.slice(0, 10);
 }
 
+// Free on Finnhub's tier — used to give the briefing real earnings dates for
+// the user's own symbols instead of generic news alone. Fails silently if
+// unavailable so it never blocks the rest of the briefing.
+async function fetchEarningsCalendar(apiKey) {
+  if (!apiKey) return [];
+  const from = new Date();
+  const to = new Date();
+  to.setDate(to.getDate() + 7);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const target = `https://finnhub.io/api/v1/calendar/earnings?from=${iso(from)}&to=${iso(to)}&token=${apiKey}`;
+  try {
+    const text = await fetchViaProxyChain(target);
+    if (!text) return [];
+    const data = JSON.parse(text);
+    return Array.isArray(data.earningsCalendar) ? data.earningsCalendar : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Rough US market session detector (Eastern Time), no API needed.
+function getMarketSession() {
+  const now = new Date();
+  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const day = et.getDay();
+  const minutes = et.getHours() * 60 + et.getMinutes();
+  if (day === 0 || day === 6) return "Weekend";
+  if (minutes < 4 * 60) return "Closed";
+  if (minutes < 9 * 60 + 30) return "Pre-Market";
+  if (minutes < 16 * 60) return "Market Open";
+  if (minutes < 20 * 60) return "After-Hours";
+  return "Closed";
+}
+
 // Calls Google's free-tier Gemini API directly from the browser (no backend
 // needed — confirmed CORS-friendly on the standard generateContent endpoint).
 async function callGemini(apiKeyG, prompt) {
@@ -258,30 +292,41 @@ async function callGemini(apiKeyG, prompt) {
   return text;
 }
 
-function buildBriefingPrompt({ dateStr, indexLines, moverLines, headlines }) {
-  return `You are a calm, precise market-briefing assistant writing a short daily note for a retail investor reviewing their own personal watchlist. Today is ${dateStr}.
+function buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, headlines, earningsLines }) {
+  const framingNote = sessionLabel === "Pre-Market" || sessionLabel === "Weekend" || sessionLabel === "Closed"
+    ? "The market has not opened yet (or is closed). Write this as a forward-looking pre-market brief — what to watch for once trading starts today — not a recap of a session that hasn't happened."
+    : sessionLabel === "Market Open"
+    ? "The market is currently open. Write this as a live read on today's session so far."
+    : "The market has closed for the day (after-hours). Write this as a end-of-day recap.";
 
-INDEX SNAPSHOT:
+  return `You are a calm, precise market-briefing assistant writing a short note for a retail investor reviewing their own personal watchlist. Today is ${dateStr}. Current market session: ${sessionLabel}.
+
+${framingNote}
+
+INDEX SNAPSHOT (${sessionLabel === "Pre-Market" ? "pre-market prices — reflect early trading in these ETFs, not futures contracts" : "current prices"}):
 ${indexLines}
 
 NOTABLE WATCHLIST MOVERS:
 ${moverLines || "(no data yet)"}
 
-RECENT FINANCIAL HEADLINES:
-${headlines.length ? headlines.map((h) => `- ${h}`).join("\n") : "(no headlines available right now — base your read on price action alone)"}
+UPCOMING EARNINGS (next 7 days, for this user's own watchlist/portfolio symbols only):
+${earningsLines || "(none scheduled in the next 7 days, or data unavailable)"}
 
-Write a briefing using ONLY the information above. Do not invent facts, numbers, or events not implied by this data. Do not give buy/sell/hold recommendations or tell the reader what to do with their money — describe what's happening and why it might matter, and let them draw their own conclusions. Keep it grounded and specific, not generic.
+RECENT FINANCIAL HEADLINES:
+${headlines.length ? headlines.map((h) => `- ${h}`).join("\n") : "(no headlines available right now — base your read on price action and earnings alone)"}
+
+Write a briefing using ONLY the information above. Do not invent facts, numbers, or events not implied by this data. Do not give buy/sell/hold recommendations or tell the reader what to do with their money — describe what's happening (or what to watch for) and why it might matter, and let them draw their own conclusions. If any headline mentions a major economic event (Fed meeting, inflation data, jobs report, etc.), work it in. Keep it grounded and specific, not generic.
 
 Respond with ONLY raw JSON (no markdown fences, no commentary) matching exactly this shape:
 {
-  "summary": "2-4 sentences on what's driving markets today, in plain language",
+  "summary": "2-4 sentences on what's driving markets today (or what to watch for, if pre-market), in plain language",
   "riskLabel": "Risk-On" | "Risk-Off" | "Mixed / Neutral",
   "riskReason": "one short sentence justifying the label",
   "callouts": [
-    { "symbol": "TICKER", "note": "one short, specific sentence of context — not advice" }
+    { "symbol": "TICKER", "note": "one short, specific sentence of context — not advice. Mention an upcoming earnings date here if this symbol has one." }
   ]
 }
-Include at most 5 callouts, only for names with something genuinely notable to say. If nothing stands out, return an empty callouts array.`;
+Include at most 5 callouts, only for names with something genuinely notable to say (price move, upcoming earnings, or relevant headline). If nothing stands out, return an empty callouts array.`;
 }
 
 function parseBriefingResponse(text) {
@@ -564,7 +609,7 @@ export default function MarketDesk() {
     autoBriefingRef.current = todayStr;
     generateBriefing(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, geminiKey, briefing]);
+  }, [ready, geminiKey, briefing, lastUpdated]);
 
   // ---- Handlers ----
   function saveApiKey() {
@@ -600,7 +645,17 @@ export default function MarketDesk() {
     setBriefingLoading(true);
     setBriefingError("");
     try {
-      const headlines = simulated ? [] : await fetchMarketHeadlines();
+      const sessionLabel = getMarketSession();
+      const [headlines, earningsAll] = await Promise.all([
+        simulated ? Promise.resolve([]) : fetchMarketHeadlines(),
+        simulated ? Promise.resolve([]) : fetchEarningsCalendar(apiKey),
+      ]);
+      const mySymbols = new Set([...watchlist, ...portfolio.map((p) => p.symbol)]);
+      const earningsLines = earningsAll
+        .filter((e) => mySymbols.has(e.symbol))
+        .slice(0, 8)
+        .map((e) => `${e.symbol}: reporting ${e.date}${e.hour === "bmo" ? " (before market open)" : e.hour === "amc" ? " (after market close)" : ""}`)
+        .join("\n");
       const indexLines = INDEX_PROXIES.map(({ symbol, label }) => {
         const q = quotes[symbol];
         return q ? `${label} (${symbol}): ${fmt(q.c)}, ${fmtPct(q.dp)}` : `${label} (${symbol}): no data yet`;
@@ -615,10 +670,10 @@ export default function MarketDesk() {
         .slice(0, 12);
       const moverLines = moversForPrompt.map((m) => `${m.symbol}: ${fmt(m.price)} (${fmtPct(m.pct)})`).join("\n");
       const dateStr = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-      const prompt = buildBriefingPrompt({ dateStr, indexLines, moverLines, headlines });
+      const prompt = buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, headlines, earningsLines });
       const raw = await callGemini(geminiKey, prompt);
       const parsed = parseBriefingResponse(raw);
-      const next = { ...parsed, date: todayStr, generatedAt: new Date().toISOString(), simulatedNote: simulated };
+      const next = { ...parsed, date: todayStr, sessionLabel, generatedAt: new Date().toISOString(), simulatedNote: simulated };
       setBriefing(next);
       safeStorageSet("md-briefing", next);
     } catch (e) {
@@ -839,6 +894,14 @@ export default function MarketDesk() {
   const tapeItems = [...INDEX_PROXIES.map((i) => i.symbol), ...watchlist];
   const validPcts = watchRows.map((r) => r.pct).filter((p) => p !== null);
   const avgPct = validPcts.length ? validPcts.reduce((a, b) => a + b, 0) / validPcts.length : 0;
+  const marketSession = getMarketSession();
+  const sessionColors = {
+    "Pre-Market": { bg: "rgba(167,139,250,0.15)", color: "#A78BFA", border: "rgba(167,139,250,0.35)" },
+    "Market Open": { bg: "rgba(52,231,166,0.15)", color: "#34E7A6", border: "rgba(52,231,166,0.35)" },
+    "After-Hours": { bg: "rgba(148,130,255,0.1)", color: "#9C97C4", border: "rgba(148,130,255,0.25)" },
+    "Closed": { bg: "rgba(148,130,255,0.08)", color: "#655F8C", border: "rgba(148,130,255,0.18)" },
+    "Weekend": { bg: "rgba(148,130,255,0.08)", color: "#655F8C", border: "rgba(148,130,255,0.18)" },
+  };
 
   // ---- Render ----
   if (!ready) return null;
@@ -1053,6 +1116,12 @@ export default function MarketDesk() {
                 <div className="flex items-center gap-2">
                   <div style={{ width: 6, height: 6, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 8px 1px rgba(214,95,224,0.5)" }} className="rounded-full" />
                   <span className="text-sm uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Today's briefing</span>
+                  <span
+                    className="text-xs font-semibold px-2 py-0.5 rounded-full ml-1"
+                    style={{ background: sessionColors[marketSession].bg, color: sessionColors[marketSession].color, border: `1px solid ${sessionColors[marketSession].border}` }}
+                  >
+                    {marketSession}
+                  </span>
                   {briefing && briefing.riskLabel && (
                     <span
                       className="text-xs font-semibold px-2 py-0.5 rounded-full ml-1"
@@ -1150,6 +1219,20 @@ export default function MarketDesk() {
             </div>
 
             {/* Index strip */}
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm uppercase tracking-wider font-medium" style={{ color: "#9C97C4" }}>Indices</span>
+                <span
+                  className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                  style={{ background: sessionColors[marketSession].bg, color: sessionColors[marketSession].color, border: `1px solid ${sessionColors[marketSession].border}` }}
+                >
+                  {marketSession}
+                </span>
+              </div>
+              {(marketSession === "Pre-Market" || marketSession === "After-Hours") && (
+                <span className="text-xs" style={{ color: "#655F8C" }}>Reflects each ETF's own extended-hours trades, not futures contracts</span>
+              )}
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {INDEX_PROXIES.map((idx) => {
                 const q = quotes[idx.symbol];
