@@ -270,6 +270,18 @@ function getMarketSession() {
   return "Closed";
 }
 
+// Finnhub's free tier doesn't reliably push live pre/after-market ticks for
+// every individual stock — outside regular hours, a quote's own last-trade
+// timestamp is often still the prior regular session's close, which makes
+// its % change misleading (it looks like a live move but isn't). Flag those
+// so we don't treat a stale close-to-close number as a real intraday move.
+function isQuoteStale(q, sessionLabel) {
+  if (!q || !q.t) return false;
+  if (sessionLabel !== "Pre-Market" && sessionLabel !== "After-Hours") return false;
+  const hoursSinceQuote = (Date.now() - q.t * 1000) / 3600000;
+  return hoursSinceQuote > 10;
+}
+
 // Calls Google's free-tier Gemini API directly from the browser (no backend
 // needed — confirmed CORS-friendly on the standard generateContent endpoint).
 async function callGemini(apiKeyG, prompt) {
@@ -306,8 +318,8 @@ ${framingNote}
 INDEX SNAPSHOT (${sessionLabel === "Pre-Market" ? "pre-market prices — reflect early trading in these ETFs, not futures contracts" : "current prices"}):
 ${indexLines}
 
-NOTABLE WATCHLIST MOVERS:
-${moverLines || "(no data yet)"}
+NOTABLE WATCHLIST MOVERS (stocks with stale, non-live quotes have already been excluded — a short or empty list here during pre-market/after-hours is normal and means few names have live extended-hours prints yet, not that nothing is happening):
+${moverLines || "(no live-quote movers available right now)"}
 
 UPCOMING EARNINGS (next 7 days, for this user's own watchlist/portfolio symbols only):
 ${earningsLines || "(none scheduled in the next 7 days, or data unavailable)"}
@@ -694,7 +706,8 @@ export default function MarketDesk() {
       const moversForPrompt = watchlist
         .map((sym) => {
           const q = quotes[sym];
-          return q ? { symbol: sym, pct: q.dp, price: q.c } : null;
+          if (!q || isQuoteStale(q, sessionLabel)) return null;
+          return { symbol: sym, pct: q.dp, price: q.c };
         })
         .filter(Boolean)
         .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))
@@ -915,12 +928,15 @@ export default function MarketDesk() {
   }
 
   // ---- Derived data ----
+  const marketSession = getMarketSession();
   const watchRows = watchlist.map((sym) => {
     const q = quotes[sym];
+    const stale = isQuoteStale(q, marketSession);
     return {
       symbol: sym, sector: SECTOR_MAP[sym] || "Other",
       price: q?.c ?? null, change: q?.d ?? null, pct: q?.dp ?? null,
       high: q?.h ?? null, low: q?.l ?? null, prevClose: q?.pc ?? null,
+      stale,
     };
   });
   const sortedWatch = sortRows(watchRows, wlSort, (r, f) => r[f]);
@@ -953,7 +969,7 @@ export default function MarketDesk() {
   }
   const portfolioSectorEntries = Object.entries(portfolioSectorTotals).sort((a, b) => b[1] - a[1]);
 
-  const moversSource = watchRows.filter((r) => r.pct !== null);
+  const moversSource = watchRows.filter((r) => r.pct !== null && !r.stale);
   const gainers = [...moversSource].sort((a, b) => b.pct - a.pct).slice(0, 5);
   const losers = [...moversSource].sort((a, b) => a.pct - b.pct).slice(0, 5);
 
@@ -965,9 +981,8 @@ export default function MarketDesk() {
   }
 
   const tapeItems = [...INDEX_PROXIES.map((i) => i.symbol), ...watchlist];
-  const validPcts = watchRows.map((r) => r.pct).filter((p) => p !== null);
+  const validPcts = watchRows.filter((r) => r.pct !== null && !r.stale).map((r) => r.pct);
   const avgPct = validPcts.length ? validPcts.reduce((a, b) => a + b, 0) / validPcts.length : 0;
-  const marketSession = getMarketSession();
   const sessionColors = {
     "Pre-Market": { bg: "rgba(167,139,250,0.15)", color: "#A78BFA", border: "rgba(167,139,250,0.35)" },
     "Market Open": { bg: "rgba(52,231,166,0.15)", color: "#34E7A6", border: "rgba(52,231,166,0.35)" },
@@ -1386,13 +1401,13 @@ export default function MarketDesk() {
                           const pct = r.pct ?? 0;
                           const intensity = Math.min(Math.abs(pct) / 3, 1);
                           const positive = pct >= 0;
-                          const bg = r.pct === null ? "rgba(148,130,255,0.08)" : positive
+                          const bg = r.pct === null || r.stale ? "rgba(148,130,255,0.08)" : positive
                             ? `rgba(52, 231, 166, ${0.16 + intensity * 0.5})`
                             : `rgba(255, 92, 130, ${0.16 + intensity * 0.5})`;
-                          const glow = r.pct === null ? "none" : positive
+                          const glow = r.pct === null || r.stale ? "none" : positive
                             ? `0 4px 18px -6px rgba(52,231,166,${0.25 + intensity * 0.45})`
                             : `0 4px 18px -6px rgba(255,92,130,${0.25 + intensity * 0.45})`;
-                          const borderColor = r.pct === null ? "rgba(255,255,255,0.07)" : positive
+                          const borderColor = r.pct === null || r.stale ? "rgba(255,255,255,0.07)" : positive
                             ? `rgba(52,231,166,${0.25 + intensity * 0.35})`
                             : `rgba(255,92,130,${0.25 + intensity * 0.35})`;
                           return (
@@ -1400,10 +1415,11 @@ export default function MarketDesk() {
                               key={r.symbol}
                               className="rounded-xl px-3 py-2.5"
                               style={{ background: bg, border: `1px solid ${borderColor}`, boxShadow: glow }}
+                              title={r.stale ? "Last trade is from the prior session — no live extended-hours print yet" : undefined}
                             >
                               <div className="text-base font-mono font-bold leading-tight" style={{ color: "#F1EEFB" }}>{r.symbol}</div>
                               <div className="text-sm font-mono leading-tight mt-1" style={{ color: "#B9B4DC" }}>{r.price !== null ? fmt(r.price) : "—"}</div>
-                              <div className="mt-1"><ChangeTag pct={r.pct} /></div>
+                              <div className="mt-1">{r.stale ? <span className="text-sm" style={{ color: "#655F8C" }}>prev. close</span> : <ChangeTag pct={r.pct} />}</div>
                             </div>
                           );
                         })}
@@ -1619,8 +1635,8 @@ export default function MarketDesk() {
                       <td className="px-3 py-2.5 font-mono font-semibold text-base" style={{ color: "#F1EEFB", position: "sticky", left: 0, zIndex: 1, background: "#171331", boxShadow: "4px 0 8px -4px rgba(0,0,0,0.45)" }}>{r.symbol}</td>
                       <td className="px-3 py-2.5 text-sm" style={{ color: "#8B87A8" }}>{r.sector}</td>
                       <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#DAD5F5" }}>{r.price !== null ? fmt(r.price) : "—"}</td>
-                      <td className="px-3 py-2.5 text-right"><ChangeTag value={r.change} /></td>
-                      <td className="px-3 py-2.5 text-right"><ChangeTag pct={r.pct} /></td>
+                      <td className="px-3 py-2.5 text-right">{r.stale ? <span className="text-sm" style={{ color: "#655F8C" }}>prev. close</span> : <ChangeTag value={r.change} />}</td>
+                      <td className="px-3 py-2.5 text-right">{r.stale ? <span className="text-sm" style={{ color: "#655F8C" }}>—</span> : <ChangeTag pct={r.pct} />}</td>
                       <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#8B87A8" }}>{r.high !== null ? fmt(r.high) : "—"}</td>
                       <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#8B87A8" }}>{r.low !== null ? fmt(r.low) : "—"}</td>
                       <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#8B87A8" }}>{r.prevClose !== null ? fmt(r.prevClose) : "—"}</td>
