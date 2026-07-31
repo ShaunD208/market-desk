@@ -987,11 +987,18 @@ export default function MarketDesk() {
   const tapeItems = [...INDEX_PROXIES.map((i) => i.symbol), ...watchlist];
 
   useEffect(() => {
-    if (tapeRef.current) {
-      // scrollWidth covers both duplicated copies; half of it is one full set's width in pixels.
-      setTapeWidth(tapeRef.current.scrollWidth / 2);
+    const el = tapeRef.current;
+    if (!el) return;
+    const measure = () => setTapeWidth(el.scrollWidth / 2);
+    measure();
+    // Re-measure automatically whenever the real rendered size changes — this
+    // catches the case where web fonts finish loading slightly after the
+    // first paint and shift the true content width.
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(el);
+      return () => observer.disconnect();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchlist.join(","), watchlists.length]);
 
   const validPcts = watchRows.filter((r) => r.pct !== null && !r.stale).map((r) => r.pct);
@@ -1095,7 +1102,7 @@ export default function MarketDesk() {
       <style>{`
         ${FONT_IMPORT}
         @keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-${tapeWidth || 2000}px); } }
-        .tape-track { animation: tape-scroll ${tapeWidth ? Math.max(tapeWidth / 160, 5) : 20}s linear infinite; will-change: transform; }
+        .tape-track { animation: tape-scroll ${tapeWidth ? Math.max(tapeWidth / 135, 5) : 20}s linear infinite; will-change: transform; }
         .md-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
         .md-scroll::-webkit-scrollbar-thumb { background: rgba(148,130,255,0.3); border-radius: 4px; }
         table { border-collapse: collapse; width: 100%; }
