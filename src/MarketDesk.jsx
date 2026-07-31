@@ -315,7 +315,7 @@ function buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, he
 
 ${framingNote}
 
-INDEX SNAPSHOT (${sessionLabel === "Pre-Market" ? "pre-market prices — reflect early trading in these ETFs, not futures contracts" : "current prices"}):
+INDEX SNAPSHOT (${sessionLabel === "Pre-Market" || sessionLabel === "After-Hours" ? "extended-hours prices where available — these reflect early/late trading in the ETFs themselves, not futures contracts, and some may not have a live print yet (noted individually below if so)" : "current prices"}):
 ${indexLines}
 
 NOTABLE WATCHLIST MOVERS (stocks with stale, non-live quotes have already been excluded — a short or empty list here during pre-market/after-hours is normal and means few names have live extended-hours prints yet, not that nothing is happening):
@@ -701,7 +701,9 @@ export default function MarketDesk() {
         .join("\n");
       const indexLines = INDEX_PROXIES.map(({ symbol, label }) => {
         const q = quotes[symbol];
-        return q ? `${label} (${symbol}): ${fmt(q.c)}, ${fmtPct(q.dp)}` : `${label} (${symbol}): no data yet`;
+        if (!q) return `${label} (${symbol}): no data yet`;
+        if (isQuoteStale(q, sessionLabel)) return `${label} (${symbol}): ${fmt(q.c)}, no live extended-hours print yet — this is still the prior session's close, not a real pre/after-market move`;
+        return `${label} (${symbol}): ${fmt(q.c)}, ${fmtPct(q.dp)}`;
       }).join("\n");
       const moversForPrompt = watchlist
         .map((sym) => {
@@ -1324,13 +1326,17 @@ export default function MarketDesk() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {INDEX_PROXIES.map((idx) => {
                 const q = quotes[idx.symbol];
-                const color = changeColor(q?.dp);
+                const stale = isQuoteStale(q, marketSession);
                 const positive = (q?.dp ?? 0) >= 0;
                 return (
                   <div key={idx.symbol} className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
                     <div className="text-sm mb-1" style={{ color: "#8B87A8" }}>{idx.label} · {idx.symbol}</div>
                     <div className="text-3xl font-mono font-semibold" style={{ color: "#F1EEFB" }}>{q ? fmt(q.c) : "—"}</div>
-                    <ChangeTag pct={q?.dp} size="lg" />
+                    {stale ? (
+                      <span className="text-base" style={{ color: "#655F8C" }} title="Last trade is from the prior session — no live extended-hours print yet">prev. close · no live print yet</span>
+                    ) : (
+                      <ChangeTag pct={q?.dp} size="lg" />
+                    )}
                     <IndexSparkline series={indexSeries[idx.symbol]} positive={positive} />
                   </div>
                 );
