@@ -292,14 +292,14 @@ async function callGemini(apiKeyG, prompt) {
   return text;
 }
 
-function buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, headlines, earningsLines }) {
+function buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, headlines, earningsLines, listName }) {
   const framingNote = sessionLabel === "Pre-Market" || sessionLabel === "Weekend" || sessionLabel === "Closed"
     ? "The market has not opened yet (or is closed). Write this as a forward-looking pre-market brief — what to watch for once trading starts today — not a recap of a session that hasn't happened."
     : sessionLabel === "Market Open"
     ? "The market is currently open. Write this as a live read on today's session so far."
     : "The market has closed for the day (after-hours). Write this as a end-of-day recap.";
 
-  return `You are a calm, precise market-briefing assistant writing a short note for a retail investor reviewing their own personal watchlist. Today is ${dateStr}. Current market session: ${sessionLabel}.
+  return `You are a calm, precise market-briefing assistant writing a short note for a retail investor reviewing their "${listName || "Watchlist"}" list. Today is ${dateStr}. Current market session: ${sessionLabel}.
 
 ${framingNote}
 
@@ -427,7 +427,13 @@ export default function MarketDesk() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [simulated, setSimulated] = useState(false);
 
-  const [watchlist, setWatchlist] = useState(DEFAULT_WATCHLIST);
+  const [watchlists, setWatchlists] = useState([{ id: "paper-trade", name: "Paper Trade", symbols: DEFAULT_WATCHLIST }]);
+  const [activeListId, setActiveListId] = useState("paper-trade");
+  const initialListIdRef = useRef(activeListId);
+  const [newListName, setNewListName] = useState("");
+  const [showNewListInput, setShowNewListInput] = useState(false);
+  const [editingListId, setEditingListId] = useState(null);
+  const [editingListName, setEditingListName] = useState("");
   const [portfolio, setPortfolio] = useState([]); // {id, symbol, shares, cost}
 
   const [quotes, setQuotes] = useState({}); // symbol -> {c,d,dp,h,l,o,pc}
@@ -458,20 +464,26 @@ export default function MarketDesk() {
 
   const [geminiKey, setGeminiKey] = useState("");
   const [geminiKeyDraft, setGeminiKeyDraft] = useState("");
-  const [briefing, setBriefing] = useState(null); // { date, summary, riskLabel, riskReason, callouts, generatedAt }
+  const [briefings, setBriefings] = useState({}); // { [listId]: { date, summary, riskLabel, riskReason, callouts, generatedAt } }
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [briefingError, setBriefingError] = useState("");
 
   const intervalRef = useRef(null);
   const autoBriefingRef = useRef(null);
 
+  const activeList = watchlists.find((l) => l.id === activeListId) || watchlists[0];
+  const watchlist = activeList ? activeList.symbols : [];
+  const briefing = briefings[activeListId] || null;
+
   // ---- Load persisted state ----
   useEffect(() => {
     (async () => {
       const settings = await safeStorageGet("md-settings");
-      const wl = await safeStorageGet("md-watchlist");
+      const wls = await safeStorageGet("md-watchlists");
+      const legacyWl = await safeStorageGet("md-watchlist"); // pre-multi-list format
       const pf = await safeStorageGet("md-portfolio");
-      const br = await safeStorageGet("md-briefing");
+      const brs = await safeStorageGet("md-briefings");
+      const legacyBr = await safeStorageGet("md-briefing"); // pre-multi-list format
       const ph = await safeStorageGet("md-portfolio-history");
       if (settings?.apiKey) {
         setApiKey(settings.apiKey);
@@ -483,9 +495,22 @@ export default function MarketDesk() {
       }
       if (settings?.autoRefresh) setAutoRefresh(true);
       if (settings?.simulated) setSimulated(true);
-      if (Array.isArray(wl) && wl.length) setWatchlist(wl);
+      if (Array.isArray(wls) && wls.length) {
+        setWatchlists(wls);
+        const defaultId = wls.find((l) => l.id === "paper-trade") ? "paper-trade" : wls[0].id;
+        setActiveListId(defaultId);
+        initialListIdRef.current = defaultId;
+      } else if (Array.isArray(legacyWl) && legacyWl.length) {
+        const migrated = [{ id: "paper-trade", name: "Paper Trade", symbols: legacyWl }];
+        setWatchlists(migrated);
+        safeStorageSet("md-watchlists", migrated);
+      }
       if (Array.isArray(pf)) setPortfolio(pf);
-      if (br && br.date) setBriefing(br);
+      if (brs && typeof brs === "object") {
+        setBriefings(brs);
+      } else if (legacyBr && legacyBr.date) {
+        setBriefings({ "paper-trade": legacyBr });
+      }
       if (Array.isArray(ph)) setPortfolioHistory(ph);
       setReady(true);
     })();
@@ -603,13 +628,14 @@ export default function MarketDesk() {
 
   useEffect(() => {
     if (!ready || !geminiKey) return;
+    if (activeListId !== initialListIdRef.current) return; // only the default list auto-briefs; other lists are manual
     const todayStr = new Date().toDateString();
     if (briefing && briefing.date === todayStr) return;
-    if (autoBriefingRef.current === todayStr) return;
-    autoBriefingRef.current = todayStr;
+    if (autoBriefingRef.current === todayStr + activeListId) return;
+    autoBriefingRef.current = todayStr + activeListId;
     generateBriefing(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, geminiKey, briefing, lastUpdated]);
+  }, [ready, geminiKey, briefing, lastUpdated, activeListId]);
 
   // ---- Handlers ----
   function saveApiKey() {
@@ -640,6 +666,8 @@ export default function MarketDesk() {
       setBriefingError("Add a free Gemini API key in Settings to enable the AI briefing.");
       return;
     }
+    const targetListId = activeListId;
+    const targetListName = activeList?.name || "Watchlist";
     const todayStr = new Date().toDateString();
     if (!force && briefing && briefing.date === todayStr) return;
     setBriefingLoading(true);
@@ -670,12 +698,15 @@ export default function MarketDesk() {
         .slice(0, 12);
       const moverLines = moversForPrompt.map((m) => `${m.symbol}: ${fmt(m.price)} (${fmtPct(m.pct)})`).join("\n");
       const dateStr = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-      const prompt = buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, headlines, earningsLines });
+      const prompt = buildBriefingPrompt({ dateStr, sessionLabel, indexLines, moverLines, headlines, earningsLines, listName: targetListName });
       const raw = await callGemini(geminiKey, prompt);
       const parsed = parseBriefingResponse(raw);
-      const next = { ...parsed, date: todayStr, sessionLabel, generatedAt: new Date().toISOString(), simulatedNote: simulated };
-      setBriefing(next);
-      safeStorageSet("md-briefing", next);
+      const next = { ...parsed, date: todayStr, sessionLabel, generatedAt: new Date().toISOString(), simulatedNote: simulated, listName: targetListName };
+      setBriefings((prev) => {
+        const nextAll = { ...prev, [targetListId]: next };
+        safeStorageSet("md-briefings", nextAll);
+        return nextAll;
+      });
     } catch (e) {
       setBriefingError("Couldn't generate the briefing — " + (e.message || "unknown error") + ". Double-check your Gemini key in Settings.");
     } finally {
@@ -685,8 +716,8 @@ export default function MarketDesk() {
 
   function generateBackupCode() {
     const payload = {
-      v: 1,
-      watchlist,
+      v: 2,
+      watchlists,
       portfolio,
       autoRefresh,
       simulated,
@@ -716,9 +747,17 @@ export default function MarketDesk() {
     try {
       const decoded = JSON.parse(decodeURIComponent(atob(importText.trim())));
       if (!decoded || typeof decoded !== "object") throw new Error("bad shape");
-      if (Array.isArray(decoded.watchlist)) {
-        setWatchlist(decoded.watchlist);
-        safeStorageSet("md-watchlist", decoded.watchlist);
+      if (Array.isArray(decoded.watchlists) && decoded.watchlists.length) {
+        setWatchlists(decoded.watchlists);
+        safeStorageSet("md-watchlists", decoded.watchlists);
+        const defaultId = decoded.watchlists.find((l) => l.id === "paper-trade") ? "paper-trade" : decoded.watchlists[0].id;
+        setActiveListId(defaultId);
+      } else if (Array.isArray(decoded.watchlist)) {
+        // backward compatibility with older single-list backup codes
+        const migrated = [{ id: "paper-trade", name: "Paper Trade", symbols: decoded.watchlist }];
+        setWatchlists(migrated);
+        safeStorageSet("md-watchlists", migrated);
+        setActiveListId("paper-trade");
       }
       if (Array.isArray(decoded.portfolio)) {
         setPortfolio(decoded.portfolio);
@@ -737,7 +776,7 @@ export default function MarketDesk() {
       persistSettings(nextKey, nextAuto, nextSim, nextGeminiKey);
       setQuotes({});
       setImportText("");
-      setImportMsg("Imported! Your watchlist and portfolio are restored.");
+      setImportMsg("Imported! Your watchlists and portfolio are restored.");
     } catch (e) {
       setImportMsg("That code didn't look right — make sure you copied the whole thing.");
     }
@@ -752,15 +791,46 @@ export default function MarketDesk() {
     e.preventDefault();
     const sym = newSymbol.trim().toUpperCase();
     if (!sym || watchlist.includes(sym)) { setNewSymbol(""); return; }
-    const next = [...watchlist, sym];
-    setWatchlist(next);
-    safeStorageSet("md-watchlist", next);
+    const next = watchlists.map((l) => (l.id === activeListId ? { ...l, symbols: [...l.symbols, sym] } : l));
+    setWatchlists(next);
+    safeStorageSet("md-watchlists", next);
     setNewSymbol("");
   }
   function removeWatchSymbol(sym) {
-    const next = watchlist.filter((s) => s !== sym);
-    setWatchlist(next);
-    safeStorageSet("md-watchlist", next);
+    const next = watchlists.map((l) => (l.id === activeListId ? { ...l, symbols: l.symbols.filter((s) => s !== sym) } : l));
+    setWatchlists(next);
+    safeStorageSet("md-watchlists", next);
+  }
+  function addWatchlistList() {
+    const name = newListName.trim();
+    if (!name) { setShowNewListInput(false); return; }
+    const id = `list-${Date.now()}`;
+    const next = [...watchlists, { id, name, symbols: [] }];
+    setWatchlists(next);
+    safeStorageSet("md-watchlists", next);
+    setActiveListId(id);
+    setNewListName("");
+    setShowNewListInput(false);
+  }
+  function renameWatchlistList(id, name) {
+    setEditingListId(null);
+    if (!name.trim()) return;
+    const next = watchlists.map((l) => (l.id === id ? { ...l, name: name.trim() } : l));
+    setWatchlists(next);
+    safeStorageSet("md-watchlists", next);
+  }
+  function deleteWatchlistList(id) {
+    if (watchlists.length <= 1) return;
+    const next = watchlists.filter((l) => l.id !== id);
+    setWatchlists(next);
+    safeStorageSet("md-watchlists", next);
+    if (activeListId === id) setActiveListId(next[0].id);
+    setBriefings((prev) => {
+      const nb = { ...prev };
+      delete nb[id];
+      safeStorageSet("md-briefings", nb);
+      return nb;
+    });
   }
   function addHolding(e) {
     e.preventDefault();
@@ -1115,7 +1185,7 @@ export default function MarketDesk() {
               <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
                 <div className="flex items-center gap-2">
                   <div style={{ width: 6, height: 6, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 8px 1px rgba(214,95,224,0.5)" }} className="rounded-full" />
-                  <span className="text-sm uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Today's briefing</span>
+                  <span className="text-sm uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Today's briefing <span style={{ color: "#9C97C4", textTransform: "none", letterSpacing: "normal" }}>· {activeList?.name}</span></span>
                   <span
                     className="text-xs font-semibold px-2 py-0.5 rounded-full ml-1"
                     style={{ background: sessionColors[marketSession].bg, color: sessionColors[marketSession].color, border: `1px solid ${sessionColors[marketSession].border}` }}
@@ -1293,7 +1363,7 @@ export default function MarketDesk() {
             <div className="rounded-lg p-4" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
               <div className="flex items-center gap-2 mb-4">
                 <div style={{ width: 6, height: 6, background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", boxShadow: "0 0 8px 1px rgba(214,95,224,0.5)" }} className="rounded-full" />
-                <div className="text-base uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Watchlist heatmap by sector</div>
+                <div className="text-base uppercase tracking-wider font-semibold" style={{ color: "#F1EEFB", fontFamily: "Space Grotesk, sans-serif" }}>Watchlist heatmap by sector <span style={{ color: "#9C97C4", textTransform: "none", letterSpacing: "normal" }}>· {activeList?.name}</span></div>
               </div>
               <div style={{ columns: "1", columnGap: "1.25rem" }} className="heatmap-columns">
                 {Object.entries(sectorGroups).map(([sector, rows]) => {
@@ -1453,8 +1523,74 @@ export default function MarketDesk() {
 
         {tab === "watchlist" && (
           <div className="space-y-4">
+            <div>
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                {watchlists.map((l) => (
+                  <div key={l.id} className="flex items-center gap-1">
+                    {editingListId === l.id ? (
+                      <input
+                        autoFocus
+                        value={editingListName}
+                        onChange={(e) => setEditingListName(e.target.value)}
+                        onBlur={() => renameWatchlistList(l.id, editingListName)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") renameWatchlistList(l.id, editingListName);
+                          if (e.key === "Escape") setEditingListId(null);
+                        }}
+                        className="input text-sm px-2.5 py-1.5"
+                        style={{ width: 140 }}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setActiveListId(l.id)}
+                        onDoubleClick={() => { setEditingListId(l.id); setEditingListName(l.name); }}
+                        className="px-3 py-1.5 rounded-full text-sm font-medium flex items-center gap-1.5"
+                        style={{
+                          background: l.id === activeListId ? "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)" : "rgba(148,130,255,0.08)",
+                          color: l.id === activeListId ? "#0B0819" : "#9C97C4",
+                          border: `1px solid ${l.id === activeListId ? "transparent" : "rgba(148,130,255,0.22)"}`,
+                        }}
+                      >
+                        {l.name}
+                        <span style={{ opacity: 0.7 }}>({l.symbols.length})</span>
+                      </button>
+                    )}
+                    {watchlists.length > 1 && l.id === activeListId && editingListId !== l.id && (
+                      <button onClick={() => deleteWatchlistList(l.id)} title="Delete this list" className="p-1 rounded opacity-50 hover:opacity-100">
+                        <X size={12} color="#9C97C4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {showNewListInput ? (
+                  <input
+                    autoFocus
+                    value={newListName}
+                    onChange={(e) => setNewListName(e.target.value)}
+                    onBlur={addWatchlistList}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addWatchlistList();
+                      if (e.key === "Escape") setShowNewListInput(false);
+                    }}
+                    placeholder="List name"
+                    className="input text-sm px-2.5 py-1.5"
+                    style={{ width: 140 }}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setShowNewListInput(true)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-sm"
+                    style={{ background: "rgba(148,130,255,0.08)", border: "1px dashed rgba(148,130,255,0.3)", color: "#9C97C4" }}
+                  >
+                    <Plus size={12} /> New list
+                  </button>
+                )}
+              </div>
+              <p className="text-xs" style={{ color: "#655F8C" }}>Double-click a list name to rename it. Overview (heatmap, movers, ticker tape, briefing) always reflects whichever list is selected here.</p>
+            </div>
+
             <form onSubmit={addWatchSymbol} className="flex gap-2">
-              <input value={newSymbol} onChange={(e) => setNewSymbol(e.target.value)} placeholder="Add symbol, e.g. NVDA" className="input flex-1 max-w-xs" />
+              <input value={newSymbol} onChange={(e) => setNewSymbol(e.target.value)} placeholder={`Add symbol to ${activeList?.name || "list"}, e.g. NVDA`} className="input flex-1 max-w-xs" />
               <button type="submit" className="flex items-center gap-1 px-3 py-2 rounded-md text-base font-medium" style={{ background: "linear-gradient(135deg, #8B7CF6 0%, #D65FE0 100%)", color: "#0B0819", fontWeight: 600 }}>
                 <Plus size={14} /> Add
               </button>
