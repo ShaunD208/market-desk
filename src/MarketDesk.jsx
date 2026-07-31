@@ -401,13 +401,16 @@ function ChangeTag({ value, pct, size = "sm" }) {
   );
 }
 
-function SortHeader({ label, field, sortField, sortDir, onSort, align = "left" }) {
+function SortHeader({ label, field, sortField, sortDir, onSort, align = "left", sticky = false }) {
   const active = sortField === field;
   return (
     <th
       onClick={() => onSort(field)}
       className={`cursor-pointer select-none px-3 py-2 text-sm uppercase tracking-wider font-medium whitespace-nowrap`}
-      style={{ color: active ? "#A78BFA" : "#8B87A8", textAlign: align }}
+      style={{
+        color: active ? "#A78BFA" : "#8B87A8", textAlign: align,
+        ...(sticky ? { position: "sticky", left: 0, zIndex: 2, background: "#171331", boxShadow: "4px 0 8px -4px rgba(0,0,0,0.45)" } : {}),
+      }}
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -1475,14 +1478,14 @@ export default function MarketDesk() {
               </button>
             </form>
 
-            <div className="rounded-lg overflow-hidden md-scroll overflow-x-auto" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
+            <div className="rounded-lg md-scroll overflow-x-auto" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
               {portfolioRows.length === 0 ? (
                 <div className="p-8 text-center text-base" style={{ color: "#655F8C" }}>No holdings yet — add one above to start tracking P&L.</div>
               ) : (
                 <table>
                   <thead>
                     <tr style={{ borderBottom: "1px solid rgba(148,130,255,0.16)" }}>
-                      <SortHeader label="Symbol" field="symbol" sortField={pfSort.field} sortDir={pfSort.dir} onSort={onSortPf} />
+                      <SortHeader label="Symbol" field="symbol" sortField={pfSort.field} sortDir={pfSort.dir} onSort={onSortPf} sticky />
                       <SortHeader label="Shares" field="shares" sortField={pfSort.field} sortDir={pfSort.dir} onSort={onSortPf} align="right" />
                       <SortHeader label="Cost/Sh" field="cost" sortField={pfSort.field} sortDir={pfSort.dir} onSort={onSortPf} align="right" />
                       <SortHeader label="Price" field="price" sortField={pfSort.field} sortDir={pfSort.dir} onSort={onSortPf} align="right" />
@@ -1496,7 +1499,7 @@ export default function MarketDesk() {
                   <tbody>
                     {sortedPortfolio.map((r) => (
                       <tr key={r.id} style={{ borderBottom: "1px solid rgba(148,130,255,0.08)" }}>
-                        <td className="px-3 py-2.5">
+                        <td className="px-3 py-2.5" style={{ position: "sticky", left: 0, zIndex: 1, background: "#171331", boxShadow: "4px 0 8px -4px rgba(0,0,0,0.45)" }}>
                           <div className="font-mono font-semibold text-base" style={{ color: "#F1EEFB" }}>{r.symbol}</div>
                           <div className="text-xs" style={{ color: "#655F8C" }}>{r.sector}</div>
                         </td>
@@ -1595,11 +1598,11 @@ export default function MarketDesk() {
                 <Plus size={14} /> Add
               </button>
             </form>
-            <div className="rounded-lg overflow-hidden md-scroll overflow-x-auto" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
+            <div className="rounded-lg md-scroll overflow-x-auto" style={{ background: "rgba(30,26,64,0.55)", border: "1px solid rgba(148,130,255,0.16)", backdropFilter: "blur(16px)", boxShadow: "0 10px 30px -14px rgba(107,70,229,0.35)" }}>
               <table>
                 <thead>
                   <tr style={{ borderBottom: "1px solid rgba(148,130,255,0.16)" }}>
-                    <SortHeader label="Symbol" field="symbol" sortField={wlSort.field} sortDir={wlSort.dir} onSort={onSortWl} />
+                    <SortHeader label="Symbol" field="symbol" sortField={wlSort.field} sortDir={wlSort.dir} onSort={onSortWl} sticky />
                     <SortHeader label="Sector" field="sector" sortField={wlSort.field} sortDir={wlSort.dir} onSort={onSortWl} />
                     <SortHeader label="Price" field="price" sortField={wlSort.field} sortDir={wlSort.dir} onSort={onSortWl} align="right" />
                     <SortHeader label="Change" field="change" sortField={wlSort.field} sortDir={wlSort.dir} onSort={onSortWl} align="right" />
@@ -1613,7 +1616,7 @@ export default function MarketDesk() {
                 <tbody>
                   {sortedWatch.map((r) => (
                     <tr key={r.symbol} style={{ borderBottom: "1px solid rgba(148,130,255,0.08)" }}>
-                      <td className="px-3 py-2.5 font-mono font-semibold text-base" style={{ color: "#F1EEFB" }}>{r.symbol}</td>
+                      <td className="px-3 py-2.5 font-mono font-semibold text-base" style={{ color: "#F1EEFB", position: "sticky", left: 0, zIndex: 1, background: "#171331", boxShadow: "4px 0 8px -4px rgba(0,0,0,0.45)" }}>{r.symbol}</td>
                       <td className="px-3 py-2.5 text-sm" style={{ color: "#8B87A8" }}>{r.sector}</td>
                       <td className="px-3 py-2.5 text-right font-mono text-base" style={{ color: "#DAD5F5" }}>{r.price !== null ? fmt(r.price) : "—"}</td>
                       <td className="px-3 py-2.5 text-right"><ChangeTag value={r.change} /></td>
