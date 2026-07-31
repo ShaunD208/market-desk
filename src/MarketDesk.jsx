@@ -1084,7 +1084,7 @@ export default function MarketDesk() {
       <style>{`
         ${FONT_IMPORT}
         @keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .tape-track { animation: tape-scroll 22s linear infinite; }
+        .tape-track { animation: tape-scroll 22s linear infinite; will-change: transform; }
         .md-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
         .md-scroll::-webkit-scrollbar-thumb { background: rgba(148,130,255,0.3); border-radius: 4px; }
         table { border-collapse: collapse; width: 100%; }
@@ -1095,19 +1095,21 @@ export default function MarketDesk() {
       `}</style>
 
       {/* Ticker tape */}
-      <div className="overflow-hidden border-b" style={{ borderColor: "rgba(148,130,255,0.14)", background: "rgba(15,12,38,0.95)", backdropFilter: "blur(12px)", position: "sticky", top: 0, zIndex: 40 }}>
-        <div className="flex whitespace-nowrap tape-track py-2">
-          {[...tapeItems, ...tapeItems].map((sym, idx) => {
-            const q = quotes[sym];
-            const color = changeColor(q?.dp);
-            return (
-              <span key={idx} className="inline-flex items-center gap-2 px-4 text-2xl font-mono" style={{ color: "#9C97C4" }}>
-                <span style={{ color: "#F1EEFB", fontWeight: 600 }}>{sym}</span>
-                <span>{q ? fmt(q.c) : "—"}</span>
-                <span style={{ color }}>{q ? fmtPct(q.dp) : ""}</span>
-              </span>
-            );
-          })}
+      <div style={{ position: "sticky", top: 0, zIndex: 40 }}>
+        <div className="overflow-hidden border-b" style={{ borderColor: "rgba(148,130,255,0.14)", background: "rgba(15,12,38,0.95)", backdropFilter: "blur(12px)" }}>
+          <div className="flex whitespace-nowrap tape-track py-2">
+            {[...tapeItems, ...tapeItems].map((sym, idx) => {
+              const q = quotes[sym];
+              const color = changeColor(q?.dp);
+              return (
+                <span key={idx} className="inline-flex items-center gap-2 px-4 text-2xl font-mono" style={{ color: "#9C97C4" }}>
+                  <span style={{ color: "#F1EEFB", fontWeight: 600 }}>{sym}</span>
+                  <span>{q ? fmt(q.c) : "—"}</span>
+                  <span style={{ color }}>{q ? fmtPct(q.dp) : ""}</span>
+                </span>
+              );
+            })}
+          </div>
         </div>
       </div>
 
