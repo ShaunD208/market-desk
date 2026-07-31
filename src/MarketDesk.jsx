@@ -464,6 +464,8 @@ export default function MarketDesk() {
   const [newHoldingSymbol, setNewHoldingSymbol] = useState("");
 
   const [wlSort, setWlSort] = useState({ field: "symbol", dir: "asc" });
+  const tapeRef = useRef(null);
+  const [tapeWidth, setTapeWidth] = useState(0);
   const [pfSort, setPfSort] = useState({ field: "symbol", dir: "asc" });
 
   const [backupCode, setBackupCode] = useState("");
@@ -983,6 +985,15 @@ export default function MarketDesk() {
   }
 
   const tapeItems = [...INDEX_PROXIES.map((i) => i.symbol), ...watchlist];
+
+  useEffect(() => {
+    if (tapeRef.current) {
+      // scrollWidth covers both duplicated copies; half of it is one full set's width in pixels.
+      setTapeWidth(tapeRef.current.scrollWidth / 2);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist.join(","), watchlists.length]);
+
   const validPcts = watchRows.filter((r) => r.pct !== null && !r.stale).map((r) => r.pct);
   const avgPct = validPcts.length ? validPcts.reduce((a, b) => a + b, 0) / validPcts.length : 0;
   const sessionColors = {
@@ -1083,8 +1094,8 @@ export default function MarketDesk() {
     <div style={{ background: "radial-gradient(ellipse 1000px 700px at 10% -10%, rgba(139,124,246,0.14), transparent 55%), radial-gradient(ellipse 900px 700px at 100% 0%, rgba(214,95,224,0.10), transparent 50%), #07061a", minHeight: "700px", fontFamily: "Inter, sans-serif" }} className="w-full">
       <style>{`
         ${FONT_IMPORT}
-        @keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .tape-track { animation: tape-scroll 22s linear infinite; will-change: transform; }
+        @keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-${tapeWidth || 2000}px); } }
+        .tape-track { animation: tape-scroll ${tapeWidth ? Math.max(tapeWidth / 160, 5) : 20}s linear infinite; will-change: transform; }
         .md-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
         .md-scroll::-webkit-scrollbar-thumb { background: rgba(148,130,255,0.3); border-radius: 4px; }
         table { border-collapse: collapse; width: 100%; }
@@ -1097,7 +1108,7 @@ export default function MarketDesk() {
       {/* Ticker tape */}
       <div style={{ position: "sticky", top: 0, zIndex: 40 }}>
         <div className="overflow-hidden border-b" style={{ borderColor: "rgba(148,130,255,0.14)", background: "rgba(15,12,38,0.95)", backdropFilter: "blur(12px)" }}>
-          <div className="flex whitespace-nowrap tape-track py-2">
+          <div ref={tapeRef} className="flex whitespace-nowrap tape-track py-2">
             {[...tapeItems, ...tapeItems].map((sym, idx) => {
               const q = quotes[sym];
               const color = changeColor(q?.dp);
