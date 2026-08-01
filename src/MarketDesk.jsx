@@ -1000,16 +1000,23 @@ export default function MarketDesk() {
   useEffect(() => {
     const el = tapeRef.current;
     if (!el) return;
-    const measure = () => setTapeWidth(el.scrollWidth / 2);
+    let cancelled = false;
+    const measure = () => { if (!cancelled) setTapeWidth(el.scrollWidth / 2); };
     measure();
-    // Re-measure automatically whenever the real rendered size changes — this
-    // catches the case where web fonts finish loading slightly after the
-    // first paint and shift the true content width.
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(measure);
-      observer.observe(el);
-      return () => observer.disconnect();
+    // The JetBrains Mono web font can finish loading just after first paint,
+    // which shifts the true text width — measuring before that happens locks
+    // in a too-small distance and makes the loop point come too soon. Wait
+    // for fonts to be ready and re-measure once they are, on top of the
+    // ResizeObserver safety net below.
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(measure);
     }
+    let observer;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(measure);
+      observer.observe(el);
+    }
+    return () => { cancelled = true; if (observer) observer.disconnect(); };
   }, [watchlist.join(","), watchlists.length]);
 
   const validPcts = watchRows.filter((r) => r.pct !== null && !r.stale).map((r) => r.pct);
