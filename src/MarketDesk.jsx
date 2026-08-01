@@ -259,10 +259,21 @@ async function fetchEarningsCalendar(apiKey) {
 // Rough US market session detector (Eastern Time), no API needed.
 function getMarketSession() {
   const now = new Date();
-  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const day = et.getDay();
-  const minutes = et.getHours() * 60 + et.getMinutes();
-  if (day === 0 || day === 6) return "Weekend";
+  // Intl.DateTimeFormat.formatToParts is the reliable, standards-based way to
+  // get a date/time in a specific timezone — round-tripping through
+  // toLocaleString + `new Date(...)` (the old approach) is a known-fragile
+  // trick that some browsers, notably mobile Safari, can parse incorrectly.
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric", minute: "numeric", hour12: false, weekday: "short",
+  }).formatToParts(now);
+  const map = {};
+  for (const p of parts) map[p.type] = p.value;
+  const hour = parseInt(map.hour, 10) % 24; // hour12:false can render midnight as "24"
+  const minute = parseInt(map.minute, 10);
+  const weekdayIndex = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[map.weekday];
+  const minutes = hour * 60 + minute;
+  if (weekdayIndex === 0 || weekdayIndex === 6) return "Weekend";
   if (minutes < 4 * 60) return "Closed";
   if (minutes < 9 * 60 + 30) return "Pre-Market";
   if (minutes < 16 * 60) return "Market Open";
